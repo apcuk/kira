@@ -1,1 +1,7 @@
 # conf/config.yaml
+
+database:
+  name: kira_db
+  tables:
+    users: users
+    chatlog: chatlog

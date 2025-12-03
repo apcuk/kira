@@ -89,15 +89,19 @@ def log_message(source: str, author: str, message: str):
     """Логирует сообщение в соответствующие лог-файлы"""
     log_entry = f"[{source}.{author}] {message}"
     
-    # логика записи в файлы
-    if source == "main" or author in ["system", "error"]:
+    # В system.log — только системные сообщения и ошибки из любых источников
+    if author in ["system", "error"]:
         system_logger.info(log_entry)
     
-    if source == "telegram":
+    # В telegram.log — только ТЕХНИЧЕСКИЕ события телеграма (запуск/ошибки)
+    if source == "telegram" and author in ["system", "error"]:
         telegram_logger.info(log_entry)
     
-    if author in ["user", "system", "ai_model"] or source in ["telegram", "terminal", "main"]:
+    # В chat.log — ВСЕ диалоги (пользователь, ИИ) и системные сообщения
+    if author in ["user", "ai_model"]:
         chat_logger.info(log_entry)
     
+    # В openai.log / deepseek.log — только ответы ИИ (будет позже)
     if author == "ai_model":
         openai_logger.info(log_entry)
+        # deepseek_logger.info(log_entry)  # Раскомментируй, когда добавишь deepseek логгер
