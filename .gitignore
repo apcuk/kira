@@ -6,13 +6,12 @@
 # Логи
 *.log
 
-# Все файлы с промптами кроме основного шаблона
-conf/prompts_*
-!conf/prompts_template.py
-
 # Папка вспомогательных отладочных скриптов
 /scrs/*
 !/scrs/.gitkeep
+
+# Файлы личностей (Markdown)
+conf/*.md
 
 # Python
 __pycache__/

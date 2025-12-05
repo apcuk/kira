@@ -5,7 +5,11 @@
 #           - придерживайся стиля.
 #           - называй функции логично и максимально информативно.
 
-# v.3.03    - БУДЕМ ПОДКЛЮЧАТЬ БД.
+# v.3.04    - Добавлена работа с AI-провайдерами: OpenAI и DeepSeek (ask_openai, ask_deepseek).
+#           - Реализована загрузка контекста истории из БД (get_recent_chat_context).
+#           - Личности вынесены в .md-файлы.
+
+# v.3.03    - реализовно сохраниение chatlog'а в БД.
 
 # v.3.02    - реализован terminal-фронтенд.
 #           - реализована система логгирования. требует донастройки впоследствии.
@@ -19,13 +23,14 @@
 
 import os
 import yaml
+from openai import OpenAI
 from telegram.ext import Application, MessageHandler, filters
 from dotenv import load_dotenv
 from logger import setup_logging, log_message  # Добавляем логирование
 import psycopg2
 from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
 
-START_MESSAGE = "v.3.03"  # Обновляем версию
+START_MESSAGE = "v.3.04"  # Обновляем версию
 
 # Инициализируем логирование
 setup_logging()
@@ -42,15 +47,9 @@ try:
         log_message("main", "error", "config.yaml пустой или невалидный")
         exit(1)
         
-    DB_NAME = config['database']['name']
-    
 except Exception as e:
     log_message("main", "error", f"Ошибка загрузки config.yaml: {e}")
     exit(1)
-
-
-# Объявляем константы
-DB_NAME = config['database']['name']
 
 
 # >============================================<
@@ -81,7 +80,7 @@ def route_message(source: str, author: str, message: str, user_id: int = None) -
     log_message(source, author, message)
     
     # Обрабатываем сообщение в ядре системы
-    response_source, response_author, response_text = process_message(source, author, message)
+    response_source, response_author, response_text = process_message(source, author, message, user_id)
     
     # Сохраняем ответное сообщение в чатлог пользователя
     if user_id:
@@ -259,13 +258,193 @@ def save_to_user_chatlog(user_id: int, source: str, author: str, message: str):
         log_message("database", "error", f"Ошибка сохранения в чатлог: {e}")
 
 
+# Возвращает последние limit сообщений из чатлога пользователя, исключая самое свежее (только что сохранённое).
+def get_recent_chat_context(user_id: int, limit: int = None) -> list:
+    db_url = os.getenv('DB_URL')
+    context = []
+    
+    # Берём лимит из конфига, если не передан явно
+    if limit is None:
+        limit = config.get('ai', {}).get('context_messages_limit', 10)
+    
+    try:
+        conn = psycopg2.connect(db_url)
+        cursor = conn.cursor()
+        
+        table_name = f"user_{user_id}_chatlog"
+        
+        cursor.execute(f'''
+            SELECT author, message 
+            FROM {table_name} 
+            WHERE author IN ('user', 'ai_model')
+            ORDER BY created_at DESC 
+            LIMIT %s 
+            OFFSET 1  -- исключаем самое последнее (текущее) сообщение
+        ''', (limit,))
+        
+        rows = cursor.fetchall()
+        for author, message in reversed(rows):
+            role = "user" if author == "user" else "assistant"
+            context.append({"role": role, "content": message})
+        
+        cursor.close()
+        conn.close()
+        
+    except Exception as e:
+        log_message("database", "error", f"Ошибка загрузки контекста: {e}")
+    
+    log_message("database", "system", f"Loaded {len(context)} history messages for user {user_id}")
+    return context
+
+
+# >============================================<
+# back_ИИ
+# AI-ПРОВАЙДЕРЫ
+# >============================================<
+
+
+# Формирует список сообщений для AI API
+def build_ai_messages(user_message: str, user_id: int = None) -> list:
+    
+    # Получаем имя личности из конфига
+    persona_name = config.get('ai', {}).get('persona', 'person_default')
+    persona_file = f"conf/{persona_name}.md"  # расширение .md
+    
+    messages = []
+    
+    try:
+        with open(persona_file, 'r', encoding='utf-8') as f:
+            content = f.read()
+        
+        # Разбиваем файл на блоки по ##
+        blocks = content.split('## ')[1:]  # первый элемент — всё до первого заголовка, его пропускаем
+        
+        for block in blocks:
+            # Первая строка — название блока, остальное — содержимое
+            lines = block.strip().split('\n', 1)
+            if len(lines) == 2:
+                block_name, block_content = lines[0].strip(), lines[1].strip()
+                # Каждый блок становится отдельным system-сообщением
+                messages.append({"role": "system", "content": block_content})
+                log_message("core", "debug", f"Loaded persona block: {block_name}")
+        
+        if not messages:
+            log_message("core", "error", f"Файл личности {persona_file} не содержит блоков")
+            messages.append({"role": "system", "content": "Ты — ассистент."})
+            
+    except FileNotFoundError:
+        log_message("core", "error", f"Файл личности не найден: {persona_file}")
+        messages.append({"role": "system", "content": "Ты — ассистент."})
+    
+    # Добавляем историю диалога, если есть user_id
+    if user_id:
+        history = get_recent_chat_context(user_id)
+        messages.extend(history)
+        log_message("core", "system", f"Added {len(history)} history messages for user {user_id}")
+    
+    # Добавляем текущее сообщение пользователя
+    messages.append({"role": "user", "content": user_message})
+    
+    log_message("core", "system", f"Persona: {persona_name}, total blocks: {len(messages)-len(history)-1}")
+    return messages
+
+
+# Отправляет запрос к OpenAI API (ChatGPT) и возвращает ответ или None при ошибке.
+def ask_openai(messages: list) -> str:
+    api_key = os.getenv('API_KEY_OPENAI')
+    if not api_key:
+        log_message("core", "error", "API_KEY_OPENAI не найден в .env")
+        return None  # ← Изменено: было строкой ошибки, теперь None
+    
+    try:
+        client = OpenAI(api_key=api_key)  # base_url по умолчанию OpenAI
+        
+        ai_config = config.get('ai', {}).get('openai', {})
+        model = ai_config.get('model', 'gpt-4o-mini')
+        temperature = ai_config.get('temperature', 0.7)
+        max_tokens = ai_config.get('max_tokens', 2048)
+        
+        response = client.chat.completions.create(
+            model=model,
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=temperature
+        )
+        
+        answer = response.choices[0].message.content
+        # log_message("openai", "ai_model", f"Answer: {answer[:200]}...")
+        return answer
+        
+    except Exception as e:
+        error_msg = f"Ошибка OpenAI API: {e}"
+        log_message("openai", "error", error_msg)
+        return None  # Ошибка — возвращаем None
+
+# Отправляет запрос к OpenAI API (DeepSeek) и возвращает ответ или None при ошибке.
+def ask_deepseek(messages: list) -> str:
+    api_key = os.getenv('API_KEY_DEEPSEEK')
+    if not api_key:
+        log_message("core", "error", "API_KEY_DEEPSEEK не найден в .env")
+        return None  # Возвращаем None, чтобы роутер мог переключиться на резерв
+    
+    try:
+        # DeepSeek использует OpenAI-совместимый API, но свой base_url
+        client = OpenAI(
+            api_key=api_key,
+            base_url="https://api.deepseek.com"  # можно вынести в конфиг
+        )
+        
+        ai_config = config.get('ai', {}).get('deepseek', {})
+        model = ai_config.get('model', 'deepseek-chat')
+        temperature = ai_config.get('temperature', 0.7)
+        max_tokens = ai_config.get('max_tokens', 2048)
+        
+        response = client.chat.completions.create(
+            model=model,
+            messages=messages,
+            max_tokens=max_tokens,
+            temperature=temperature
+        )
+        
+        answer = response.choices[0].message.content
+        # log_message("deepseek", "ai_model", f"Answer: {answer[:200]}...")
+        return answer
+        
+    except Exception as e:
+        error_msg = f"Ошибка DeepSeek API: {e}"
+        log_message("deepseek", "error", error_msg)
+        return None  # Ошибка — возвращаем None
+
+
+
 # >============================================<
 # ЯДРО СИСТЕМЫ - ОБРАБОТКА СООБЩЕНИЙ
 # >============================================<
 
-# Обрабатывает сообщение и генерирует ответ (source, author, message)
-def process_message(source: str, author: str, message: str) -> tuple:
-    return "core", "system", f"Эхо: {message}"
+def process_message(source: str, author: str, message: str, user_id: int = None) -> tuple:
+    """Обрабатывает сообщение: формирует messages, вызывает AI, возвращает ответ."""
+    # Формируем список сообщений с историей
+    messages = build_ai_messages(message, user_id)
+    log_message("core", "system", f"Messages built with history: {len(messages)} total")
+    
+    # Выбираем провайдера из конфига
+    provider = config.get('ai', {}).get('default_provider', 'openai')
+    log_message("core", "system", f"Selected AI provider: {provider}")
+    
+    ai_response = None
+    
+    if provider == 'deepseek':
+        ai_response = ask_deepseek(messages)
+    else:  # openai
+        ai_response = ask_openai(messages)
+    
+    # Если провайдер не ответил — возвращаем ошибку
+    if ai_response is None:
+        ai_response = f"Ошибка: AI-провайдер '{provider}' недоступен."
+        log_message("core", "error", ai_response)
+    
+    # Возвращаем ответ от имени ai_model
+    return "core", "ai_model", ai_response
 
 
 # >============================================<

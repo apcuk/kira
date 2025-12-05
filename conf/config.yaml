@@ -5,3 +5,19 @@ database:
   tables:
     users: users
     chatlog: chatlog
+
+ai:
+  default_provider: deepseek  # openai / deepseek
+  persona: person_kira
+  context_messages_limit: 30
+  
+  openai:
+    model: gpt-5-mini        # gpt-4o / gpt-4o-mini /gpt-5 / gpt-5-mini / gpt-5.1
+    temperature: 0.99
+    max_tokens: 2048  
+
+  deepseek:
+    model: deepseek-chat
+    temperature: 0.99
+    max_tokens: 2048
+    base_url: https://api.deepseek.com  # для клиента OpenAI
