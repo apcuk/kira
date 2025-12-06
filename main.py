@@ -5,6 +5,8 @@
 #           - придерживайся стиля.
 #           - называй функции логично и максимально информативно.
 
+# v.3.05    - ЧИСТИМ ЛОГИРОВАНИЕ.
+
 # v.3.04    - Добавлена работа с AI-провайдерами: OpenAI и DeepSeek (ask_openai, ask_deepseek).
 #           - Реализована загрузка контекста истории из БД (get_recent_chat_context).
 #           - Личности вынесены в .md-файлы.
@@ -30,7 +32,7 @@ from logger import setup_logging, log_message  # Добавляем логиро
 import psycopg2
 from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
 
-START_MESSAGE = "v.3.04"  # Обновляем версию
+START_MESSAGE = "v.3.05"  # Обновляем версию
 
 # Инициализируем логирование
 setup_logging()
@@ -44,11 +46,11 @@ try:
         config = yaml.safe_load(f)
     
     if config is None:
-        log_message("main", "error", "config.yaml пустой или невалидный")
+        log_message("load_dotenv", "error", "config.yaml пустой или невалидный")
         exit(1)
         
 except Exception as e:
-    log_message("main", "error", f"Ошибка загрузки config.yaml: {e}")
+    log_message("load_dotenv", "error", f"Ошибка загрузки config.yaml: {e}")
     exit(1)
 
 
@@ -59,8 +61,8 @@ except Exception as e:
 # Допустимые источники сообщений
 SOURCE = ["terminal", "telegram", "web", "main"]
 
-# Допустимые авторы сообщений  
-AUTHOR = ["user", "ai_model", "system", "error"]
+# Кеш зарегистрированных пользователей (чтобы не проверять БД каждый раз)
+_registered_users = set()
 
 
 # >============================================<
@@ -115,7 +117,10 @@ async def telegram_message_handler(update, context):
         user = update.message.from_user
         user_text = update.message.text
         
-        # Регистрируем пользователя при первом сообщении
+        # Определяем имя для логов: username или first_name или id
+        user_log_name = user.username or user.first_name or f"user_{user.id}"
+        
+        # Регистрируем пользователя (передаём имя для возможного использования в БД)
         user_id = get_or_create_user(
             user_id=user.id,
             user_name=user.username, 
@@ -123,17 +128,18 @@ async def telegram_message_handler(update, context):
         )
        
         await update.message.chat.send_action(action="typing")
-        source, author, response = route_message("telegram", "user", user_text, user_id)
+        # Передаём user_log_name как author
+        source, author, response = route_message("telegram", user_log_name, user_text, user_id)
         await update.message.reply_text(response)
         
     except Exception as e:
-        log_message("telegram", "error", f"Ошибка обработки сообщения: {e}")
+        log_message("telegram_message_handler", "error", f"Ошибка обработки сообщения: {e}")
         raise
 
 # Обрабатывает ошибки Telegram
 async def telegram_error_handler(update, context):
     error = str(context.error)
-    log_message("telegram", "error", f"Telegram ошибка: {error}")
+    log_message("telegram_error_handler", "error", f"Telegram ошибка: {error}")
 
 # Запускает Telegram бота в режиме polling
 def telegram_run_bot():
@@ -145,12 +151,12 @@ def telegram_run_bot():
     app.add_error_handler(telegram_error_handler)
     
     # Логируем запуск бота
-    log_message("telegram", "system", "Telegram бот запускается")
+    log_message("telegram_run_bot", "message", "Telegram бот запускается")
     
     try:
         app.run_polling()
     except Exception as e:
-        log_message("main", "error", f"Критическая ошибка бота: {e}")
+        log_message("telegram_run_bot", "error", f"Критическая ошибка бота: {e}")
         raise
 
 
@@ -161,6 +167,12 @@ def telegram_run_bot():
 
 # Регистрация пользователя по старой схеме
 def get_or_create_user(user_id, user_name, first_name):
+    global _registered_users
+    
+    # Если пользователь уже в кеше — сразу возвращаем ID
+    if user_id in _registered_users:
+        return user_id
+    
     db_url = os.getenv('DB_URL')
     
     try:
@@ -178,32 +190,35 @@ def get_or_create_user(user_id, user_name, first_name):
         ''')
         
         # Логируем что проверяем пользователя
-        log_message("database", "system", f"Проверяем пользователя {user_id}")
+        log_message("get_or_create_user", "message", f"Проверяем пользователя {user_id}")
         
         cursor.execute('SELECT user_id FROM users WHERE user_id = %s', (user_id,))
         existing_user = cursor.fetchone()
         
         if not existing_user:
             # Логируем создание
-            log_message("database", "system", f"Создаем пользователя: {user_name}")
+            log_message("get_or_create_user", "message", f"Создаем пользователя: {user_name}")
             cursor.execute(
                 'INSERT INTO users (user_id, user_name, user_firstname) VALUES (%s, %s, %s)',
                 (user_id, user_name, first_name)
             )
             conn.commit()
-            log_message("database", "system", f"УСПЕШНО создан пользователь: {user_name}")
+            log_message("get_or_create_user", "message", f"УСПЕШНО создан пользователь: {user_name}")
+            
+            # Создаем таблицу для логов чата пользователя (только для нового)
+            create_user_chatlog_table(user_id)
         else:
-            log_message("database", "system", f"Пользователь {user_id} уже существует")
+            log_message("get_or_create_user", "message", f"Пользователь {user_id} уже существует")
         
-        # Создаем таблицу для логов чата пользователя
-        create_user_chatlog_table(user_id)
+        # Добавляем пользователя в кеш
+        _registered_users.add(user_id)
         
         cursor.close()
         conn.close()
         return user_id
         
     except Exception as e:
-        log_message("database", "error", f"Ошибка регистрации пользователя: {e}")
+        log_message("get_or_create_user", "error", f"Ошибка регистрации пользователя: {e}")
         return None
 
 # Создает таблицу для логов чата конкретного пользователя
@@ -229,10 +244,10 @@ def create_user_chatlog_table(user_id: int):
         conn.commit()
         cursor.close()
         conn.close()
-        log_message("database", "system", f"Создана/проверена таблица {table_name}")
+        log_message("create_user_chatlog_table", "message", f"Создана/проверена таблица {table_name}")
         
     except Exception as e:
-        log_message("database", "error", f"Ошибка создания таблицы чата: {e}")
+        log_message("create_user_chatlog_table", "error", f"Ошибка создания таблица чата: {e}")
 
 # Сохраняет сообщение в таблицу пользователя
 def save_to_user_chatlog(user_id: int, source: str, author: str, message: str):
@@ -252,10 +267,10 @@ def save_to_user_chatlog(user_id: int, source: str, author: str, message: str):
         conn.commit()
         cursor.close()
         conn.close()
-        log_message("database", "system", f"Сохранено сообщение в {table_name}")
+        log_message("save_to_user_chatlog", "message", f"Сохранено сообщение в {table_name}")
         
     except Exception as e:
-        log_message("database", "error", f"Ошибка сохранения в чатлог: {e}")
+        log_message("save_to_user_chatlog", "error", f"Ошибка сохранения в чатлог: {e}")
 
 
 # Возвращает последние limit сообщений из чатлога пользователя, исключая самое свежее (только что сохранённое).
@@ -263,7 +278,6 @@ def get_recent_chat_context(user_id: int, limit: int = None) -> list:
     db_url = os.getenv('DB_URL')
     context = []
     
-    # Берём лимит из конфига, если не передан явно
     if limit is None:
         limit = config.get('ai', {}).get('context_messages_limit', 10)
     
@@ -276,24 +290,27 @@ def get_recent_chat_context(user_id: int, limit: int = None) -> list:
         cursor.execute(f'''
             SELECT author, message 
             FROM {table_name} 
-            WHERE author IN ('user', 'ai_model')
             ORDER BY created_at DESC 
             LIMIT %s 
-            OFFSET 1  -- исключаем самое последнее (текущее) сообщение
+            OFFSET 1
         ''', (limit,))
         
         rows = cursor.fetchall()
+        
+        # Авторы-ассистенты (AI провайдеры)
+        ai_authors = ["openai", "deepseek"]
+        
         for author, message in reversed(rows):
-            role = "user" if author == "user" else "assistant"
+            role = "assistant" if author in ai_authors else "user"
             context.append({"role": role, "content": message})
         
         cursor.close()
         conn.close()
         
     except Exception as e:
-        log_message("database", "error", f"Ошибка загрузки контекста: {e}")
+        log_message("get_recent_chat_context", "error", f"Ошибка загрузки контекста: {e}")
     
-    log_message("database", "system", f"Loaded {len(context)} history messages for user {user_id}")
+    log_message("get_recent_chat_context", "message", f"Loaded {len(context)} history messages for user {user_id}")
     return context
 
 
@@ -326,26 +343,26 @@ def build_ai_messages(user_message: str, user_id: int = None) -> list:
                 block_name, block_content = lines[0].strip(), lines[1].strip()
                 # Каждый блок становится отдельным system-сообщением
                 messages.append({"role": "system", "content": block_content})
-                log_message("core", "debug", f"Loaded persona block: {block_name}")
+                log_message("build_ai_messages", "debug", f"Loaded persona block: {block_name}")
         
         if not messages:
-            log_message("core", "error", f"Файл личности {persona_file} не содержит блоков")
+            log_message("build_ai_messages", "error", f"Файл личности {persona_file} не содержит блоков")
             messages.append({"role": "system", "content": "Ты — ассистент."})
             
     except FileNotFoundError:
-        log_message("core", "error", f"Файл личности не найден: {persona_file}")
+        log_message("build_ai_messages", "error", f"Файл личности не найден: {persona_file}")
         messages.append({"role": "system", "content": "Ты — ассистент."})
     
     # Добавляем историю диалога, если есть user_id
     if user_id:
         history = get_recent_chat_context(user_id)
         messages.extend(history)
-        log_message("core", "system", f"Added {len(history)} history messages for user {user_id}")
+        log_message("build_ai_messages", "message", f"Added {len(history)} history messages for user {user_id}")
     
     # Добавляем текущее сообщение пользователя
     messages.append({"role": "user", "content": user_message})
     
-    log_message("core", "system", f"Persona: {persona_name}, total blocks: {len(messages)-len(history)-1}")
+    log_message("build_ai_messages", "message", f"Persona: {persona_name}, total blocks: {len(messages)-len(history)-1}")
     return messages
 
 
@@ -353,7 +370,7 @@ def build_ai_messages(user_message: str, user_id: int = None) -> list:
 def ask_openai(messages: list) -> str:
     api_key = os.getenv('API_KEY_OPENAI')
     if not api_key:
-        log_message("core", "error", "API_KEY_OPENAI не найден в .env")
+        log_message("ask_openai", "error", "API_KEY_OPENAI не найден в .env")
         return None  # ← Изменено: было строкой ошибки, теперь None
     
     try:
@@ -367,24 +384,24 @@ def ask_openai(messages: list) -> str:
         response = client.chat.completions.create(
             model=model,
             messages=messages,
-            max_tokens=max_tokens,
-            temperature=temperature
+            max_completion_tokens=max_tokens,
+            # temperature=temperature
         )
         
         answer = response.choices[0].message.content
-        # log_message("openai", "ai_model", f"Answer: {answer[:200]}...")
+        # log_message("ask_openai", "ai_model", f"Answer: {answer[:200]}...")
         return answer
         
     except Exception as e:
         error_msg = f"Ошибка OpenAI API: {e}"
-        log_message("openai", "error", error_msg)
+        log_message("ask_openai", "error", error_msg)
         return None  # Ошибка — возвращаем None
 
 # Отправляет запрос к OpenAI API (DeepSeek) и возвращает ответ или None при ошибке.
 def ask_deepseek(messages: list) -> str:
     api_key = os.getenv('API_KEY_DEEPSEEK')
     if not api_key:
-        log_message("core", "error", "API_KEY_DEEPSEEK не найден в .env")
+        log_message("ask_deepseek", "error", "API_KEY_DEEPSEEK не найден в .env")
         return None  # Возвращаем None, чтобы роутер мог переключиться на резерв
     
     try:
@@ -407,12 +424,12 @@ def ask_deepseek(messages: list) -> str:
         )
         
         answer = response.choices[0].message.content
-        # log_message("deepseek", "ai_model", f"Answer: {answer[:200]}...")
+        # log_message("ask_deepseek", "ai_model", f"Answer: {answer[:200]}...")
         return answer
         
     except Exception as e:
         error_msg = f"Ошибка DeepSeek API: {e}"
-        log_message("deepseek", "error", error_msg)
+        log_message("ask_deepseek", "error", error_msg)
         return None  # Ошибка — возвращаем None
 
 
@@ -421,15 +438,16 @@ def ask_deepseek(messages: list) -> str:
 # ЯДРО СИСТЕМЫ - ОБРАБОТКА СООБЩЕНИЙ
 # >============================================<
 
+# Обрабатывает сообщение: формирует messages, вызывает AI, возвращает ответ."""
 def process_message(source: str, author: str, message: str, user_id: int = None) -> tuple:
-    """Обрабатывает сообщение: формирует messages, вызывает AI, возвращает ответ."""
+    
     # Формируем список сообщений с историей
     messages = build_ai_messages(message, user_id)
-    log_message("core", "system", f"Messages built with history: {len(messages)} total")
+    log_message("process_message", "message", f"Messages built with history: {len(messages)} total")
     
     # Выбираем провайдера из конфига
     provider = config.get('ai', {}).get('default_provider', 'openai')
-    log_message("core", "system", f"Selected AI provider: {provider}")
+    log_message("process_message", "message", f"Selected AI provider: {provider}")
     
     ai_response = None
     
@@ -441,10 +459,10 @@ def process_message(source: str, author: str, message: str, user_id: int = None)
     # Если провайдер не ответил — возвращаем ошибку
     if ai_response is None:
         ai_response = f"Ошибка: AI-провайдер '{provider}' недоступен."
-        log_message("core", "error", ai_response)
+        log_message("process_message", "error", ai_response)
     
     # Возвращаем ответ от имени ai_model
-    return "core", "ai_model", ai_response
+    return "core", provider, ai_response
 
 
 # >============================================<
@@ -454,8 +472,8 @@ def process_message(source: str, author: str, message: str, user_id: int = None)
 # Основная функция запуска приложения
 def main():
     # Стартовое сообщение дублируем и в терминал, и в логи
-    terminal_send_message("main", "system", START_MESSAGE)
-    log_message("main", "system", START_MESSAGE)
+    terminal_send_message("main", "message", START_MESSAGE)
+    log_message("main", "message", START_MESSAGE)
     
     telegram_run_bot()
 

@@ -7,7 +7,7 @@ database:
     chatlog: chatlog
 
 ai:
-  default_provider: deepseek  # openai / deepseek
+  default_provider: openai  # openai / deepseek
   persona: person_kira
   context_messages_limit: 30
   
