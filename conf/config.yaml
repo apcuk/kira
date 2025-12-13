@@ -6,8 +6,15 @@ database:
     users: users
     chatlog: chatlog
 
+memory:
+  session_timeout_hours: 6
+  tagging_batch_size: 10            # сколько накопилось нетэгированных сообщений — запускаем тегирование    
+  chunk_batch_size: 10              # сообщений в чанке
+  vectorize_every: 5                # векторизовать каждые N новых сообщений
+  vectorize_step_size: 8            # шаг перекрытия (50% от CHUNK_SIZE)
+
 ai:
-  default_provider: openai  # openai / deepseek
+  default_provider: deepseek  # openai / deepseek
   persona: person_kira
   context_messages_limit: 30
   

@@ -1,15 +1,18 @@
 # main.py
+
 # заметки для ИИ, который будет править этот код:
 #           - никода не удаляй и не редактируй коментарии. добавлять можно.
 #           - старайся не менять структуру кода без особой необходимости, или изменяй минимально.
 #           - придерживайся стиля.
 #           - называй функции логично и максимально информативно.
 
-# v.3.05    - ЧИСТИМ ЛОГИРОВАНИЕ.
+# v.3.06    - добавлены функция тегирования сообщений и разбивка chatlog'а в БД на сессии.
 
-# v.3.04    - Добавлена работа с AI-провайдерами: OpenAI и DeepSeek (ask_openai, ask_deepseek).
-#           - Реализована загрузка контекста истории из БД (get_recent_chat_context).
-#           - Личности вынесены в .md-файлы.
+# v.3.05    - переосмыслена и переделана система логгированния.
+
+# v.3.04    - добавлена работа с AI-провайдерами: OpenAI и DeepSeek (ask_openai, ask_deepseek).
+#           - реализована загрузка контекста истории из БД (get_recent_chat_context).
+#           - личности вынесены в .md-файлы.
 
 # v.3.03    - реализовно сохраниение chatlog'а в БД.
 
@@ -25,14 +28,18 @@
 
 import os
 import yaml
+import psycopg2
+import threading
 from openai import OpenAI
 from telegram.ext import Application, MessageHandler, filters
+from datetime import datetime, timezone
 from dotenv import load_dotenv
-from logger import setup_logging, log_message  # Добавляем логирование
-import psycopg2
 from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
 
-START_MESSAGE = "v.3.05"  # Обновляем версию
+from logger import setup_logging, log_message  # Добавляем логирование
+from memory_organizer import tag_untagged_messages
+
+START_MESSAGE = "v.3.06"  # Обновляем версию
 
 # Инициализируем логирование
 setup_logging()
@@ -179,7 +186,7 @@ def get_or_create_user(user_id, user_name, first_name):
         conn = psycopg2.connect(db_url)
         cursor = conn.cursor()
         
-        # Создаем таблицу если не существует
+        # Создаем таблицу users если не существует
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS users (
                 user_id BIGINT PRIMARY KEY,
@@ -237,7 +244,10 @@ def create_user_chatlog_table(user_id: int):
                 source VARCHAR(50) NOT NULL,
                 author VARCHAR(50) NOT NULL,
                 message TEXT NOT NULL,
-                created_at TIMESTAMP DEFAULT NOW()
+                tag_topics JSONB,
+                tag_trash BOOLEAN DEFAULT FALSE,
+                created_at TIMESTAMP DEFAULT NOW(),
+                session_id INTEGER
             )
         ''')
         
@@ -259,15 +269,71 @@ def save_to_user_chatlog(user_id: int, source: str, author: str, message: str):
         
         table_name = f"user_{user_id}_chatlog"
         
+        # 1. Определяем session_id
+        cursor.execute(f'''
+            SELECT created_at, session_id 
+            FROM {table_name} 
+            ORDER BY created_at DESC 
+            LIMIT 1
+        ''')
+        last_msg = cursor.fetchone()
+        
+        session_id = None
+        if last_msg:
+            last_time, last_session_id = last_msg
+            # Приводим last_time к aware datetime (если он naive, считаем что UTC)
+            if last_time.tzinfo is None:
+                last_time = last_time.replace(tzinfo=timezone.utc)
+            
+            time_diff = datetime.now(timezone.utc) - last_time
+            timeout_hours = config.get('memory', {}).get('session_timeout_hours', 6)
+            
+            if time_diff.total_seconds() > timeout_hours * 3600:
+                # Новая сессия
+                session_id = int(datetime.now(timezone.utc).timestamp())
+                log_message("save_to_user_chatlog", "debug", 
+                           f"Новая сессия для user_id={user_id}, перерыв: {time_diff}")
+            else:
+                # Продолжение сессии
+                session_id = last_session_id
+        else:
+            # Первое сообщение пользователя
+            session_id = int(datetime.now(timezone.utc).timestamp())
+            log_message("save_to_user_chatlog", "debug", 
+                       f"Первое сообщение, создана сессия {session_id} для user_id={user_id}")
+        
+        # 2. Сохраняем сообщение с session_id
         cursor.execute(
-            f'INSERT INTO {table_name} (source, author, message) VALUES (%s, %s, %s)',
-            (source, author, message)
+            f'INSERT INTO {table_name} (source, author, message, session_id) VALUES (%s, %s, %s, %s)',
+            (source, author, message, session_id)
         )
         
         conn.commit()
+        log_message("save_to_user_chatlog", "message", f"Сохранено сообщение в {table_name}, session_id={session_id}")
+        
+        # 3. Проверяем, нужно ли запускать тегирование
+        cursor.execute(f'''
+            SELECT COUNT(*) 
+            FROM {table_name} 
+            WHERE tag_topics IS NULL
+        ''')
+        untagged_count = cursor.fetchone()[0]
+        
+        tagging_threshold = config.get('memory', {}).get('tagging_batch_size', 10)
+        
+        if untagged_count >= tagging_threshold:
+            log_message("save_to_user_chatlog", "message", 
+                       f"Запуск фонового тегирования для user_id={user_id} (нетэгированных: {untagged_count})")
+            # Запускаем в фоне
+            thread = threading.Thread(
+                target=tag_untagged_messages, 
+                args=(user_id,),
+                daemon=True
+            )
+            thread.start()
+        
         cursor.close()
         conn.close()
-        log_message("save_to_user_chatlog", "message", f"Сохранено сообщение в {table_name}")
         
     except Exception as e:
         log_message("save_to_user_chatlog", "error", f"Ошибка сохранения в чатлог: {e}")
@@ -354,6 +420,7 @@ def build_ai_messages(user_message: str, user_id: int = None) -> list:
         messages.append({"role": "system", "content": "Ты — ассистент."})
     
     # Добавляем историю диалога, если есть user_id
+    history = []  # Инициализируем пустым списком
     if user_id:
         history = get_recent_chat_context(user_id)
         messages.extend(history)
