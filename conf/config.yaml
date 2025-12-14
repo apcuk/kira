@@ -2,21 +2,18 @@
 
 database:
   name: kira_db
-  tables:
-    users: users
-    chatlog: chatlog
 
 memory:
   session_timeout_hours: 6
+  search_chunks_limit: 3
   tagging_batch_size: 10            # сколько накопилось нетэгированных сообщений — запускаем тегирование    
-  chunk_batch_size: 10              # сообщений в чанке
-  vectorize_every: 5                # векторизовать каждые N новых сообщений
-  vectorize_step_size: 8            # шаг перекрытия (50% от CHUNK_SIZE)
+  chunk_size: 10                    # сообщений в чанке
+  chunk_step_size: 6                # шаг перекрытия
 
 ai:
   default_provider: deepseek  # openai / deepseek
   persona: person_kira
-  context_messages_limit: 30
+  context_messages_limit: 10
   
   openai:
     model: gpt-5-mini        # gpt-4o / gpt-4o-mini /gpt-5 / gpt-5-mini / gpt-5.1

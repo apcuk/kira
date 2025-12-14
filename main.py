@@ -6,6 +6,8 @@
 #           - придерживайся стиля.
 #           - называй функции логично и максимально информативно.
 
+# v.3.07    - реализованы чанкование и векторизация. попытка реализации поиска провалилась.
+
 # v.3.06    - добавлены функция тегирования сообщений и разбивка chatlog'а в БД на сессии.
 
 # v.3.05    - переосмыслена и переделана система логгированния.
@@ -30,6 +32,7 @@ import os
 import yaml
 import psycopg2
 import threading
+import re
 from openai import OpenAI
 from telegram.ext import Application, MessageHandler, filters
 from datetime import datetime, timezone
@@ -39,7 +42,13 @@ from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
 from logger import setup_logging, log_message  # Добавляем логирование
 from memory_organizer import tag_untagged_messages
 
-START_MESSAGE = "v.3.06"  # Обновляем версию
+try:
+    from memory_search import search_similar_chunks
+except ImportError:
+    log_message("main", "error", "Не удалось импортировать memory_search")
+    search_similar_chunks = None
+
+START_MESSAGE = "v.3.07"  # Обновляем версию
 
 # Инициализируем логирование
 setup_logging()
@@ -213,7 +222,7 @@ def get_or_create_user(user_id, user_name, first_name):
             log_message("get_or_create_user", "message", f"УСПЕШНО создан пользователь: {user_name}")
             
             # Создаем таблицу для логов чата пользователя (только для нового)
-            create_user_chatlog_table(user_id)
+            create_user_tables(user_id)
         else:
             log_message("get_or_create_user", "message", f"Пользователь {user_id} уже существует")
         
@@ -228,18 +237,24 @@ def get_or_create_user(user_id, user_name, first_name):
         log_message("get_or_create_user", "error", f"Ошибка регистрации пользователя: {e}")
         return None
 
-# Создает таблицу для логов чата конкретного пользователя
-def create_user_chatlog_table(user_id: int):
+# Создает таблицы для конкретного пользователя
+def create_user_tables(user_id: int):
+    """
+    Создаёт все необходимые таблицы для пользователя:
+    - user_{id}_chatlog — для сообщений
+    - user_{id}_chunks — для чанков
+    Создаёт необходимые индексы.
+    """
     db_url = os.getenv('DB_URL')
     
     try:
         conn = psycopg2.connect(db_url)
         cursor = conn.cursor()
         
-        table_name = f"user_{user_id}_chatlog"
-        
+        # 1. Таблица чатлога
+        chatlog_table = f"user_{user_id}_chatlog"
         cursor.execute(f'''
-            CREATE TABLE IF NOT EXISTS {table_name} (
+            CREATE TABLE IF NOT EXISTS {chatlog_table} (
                 id SERIAL PRIMARY KEY,
                 source VARCHAR(50) NOT NULL,
                 author VARCHAR(50) NOT NULL,
@@ -251,13 +266,41 @@ def create_user_chatlog_table(user_id: int):
             )
         ''')
         
+        # Индексы для чатлога
+        cursor.execute(f'CREATE INDEX IF NOT EXISTS idx_{chatlog_table}_created_at ON {chatlog_table}(created_at)')
+        cursor.execute(f'CREATE INDEX IF NOT EXISTS idx_{chatlog_table}_session ON {chatlog_table}(session_id)')
+        cursor.execute(f'CREATE INDEX IF NOT EXISTS idx_{chatlog_table}_tag_trash ON {chatlog_table}(tag_trash)')
+        cursor.execute(f'CREATE INDEX IF NOT EXISTS idx_{chatlog_table}_tag_topics ON {chatlog_table} USING GIN (tag_topics)')
+        
+        # 2. Таблица чанков с полем для векторов
+        chunks_table = f"user_{user_id}_chunks"
+        cursor.execute(f'''
+            CREATE TABLE IF NOT EXISTS {chunks_table} (
+                id SERIAL PRIMARY KEY,
+                chunk_text TEXT NOT NULL,
+                message_id_start INTEGER NOT NULL,
+                message_id_stop INTEGER NOT NULL,
+                session_id INTEGER NOT NULL,
+                chunk_meta JSONB,
+                embedding vector(1536),
+                created_at TIMESTAMP DEFAULT NOW()
+            )
+        ''')
+
+        # Индексы для чанков
+        cursor.execute(f'CREATE INDEX IF NOT EXISTS idx_{chunks_table}_id_range ON {chunks_table}(message_id_start, message_id_stop)')
+        cursor.execute(f'CREATE INDEX IF NOT EXISTS idx_{chunks_table}_session ON {chunks_table}(session_id)')
+        # Индекс для векторов (IVFFlat для косинусной близости)
+        cursor.execute(f'CREATE INDEX IF NOT EXISTS idx_{chunks_table}_embedding ON {chunks_table} USING ivfflat (embedding vector_cosine_ops)')
+        
         conn.commit()
         cursor.close()
         conn.close()
-        log_message("create_user_chatlog_table", "message", f"Создана/проверена таблица {table_name}")
+        log_message("create_user_tables", "message", 
+                   f"Созданы/проверены таблицы {chatlog_table} и {chunks_table} с индексами для user_id={user_id}")
         
     except Exception as e:
-        log_message("create_user_chatlog_table", "error", f"Ошибка создания таблица чата: {e}")
+        log_message("create_user_tables", "error", f"Ошибка создания таблиц: {e}")
 
 # Сохраняет сообщение в таблицу пользователя
 def save_to_user_chatlog(user_id: int, source: str, author: str, message: str):
@@ -388,26 +431,22 @@ def get_recent_chat_context(user_id: int, limit: int = None) -> list:
 
 # Формирует список сообщений для AI API
 def build_ai_messages(user_message: str, user_id: int = None) -> list:
-    
     # Получаем имя личности из конфига
     persona_name = config.get('ai', {}).get('persona', 'person_default')
-    persona_file = f"conf/{persona_name}.md"  # расширение .md
+    persona_file = f"conf/{persona_name}.md"
     
     messages = []
     
+    # 1. Загружаем личность
     try:
         with open(persona_file, 'r', encoding='utf-8') as f:
             content = f.read()
         
-        # Разбиваем файл на блоки по ##
-        blocks = content.split('## ')[1:]  # первый элемент — всё до первого заголовка, его пропускаем
-        
+        blocks = content.split('## ')[1:]
         for block in blocks:
-            # Первая строка — название блока, остальное — содержимое
             lines = block.strip().split('\n', 1)
             if len(lines) == 2:
                 block_name, block_content = lines[0].strip(), lines[1].strip()
-                # Каждый блок становится отдельным system-сообщением
                 messages.append({"role": "system", "content": block_content})
                 log_message("build_ai_messages", "debug", f"Loaded persona block: {block_name}")
         
@@ -419,14 +458,25 @@ def build_ai_messages(user_message: str, user_id: int = None) -> list:
         log_message("build_ai_messages", "error", f"Файл личности не найден: {persona_file}")
         messages.append({"role": "system", "content": "Ты — ассистент."})
     
-    # Добавляем историю диалога, если есть user_id
-    history = []  # Инициализируем пустым списком
+    # 2. Добавляем промпт памяти
+    memory_prompt_file = "conf/prompt_memory.md"
+    try:
+        with open(memory_prompt_file, 'r', encoding='utf-8') as f:
+            memory_prompt = f.read().strip()
+        if memory_prompt:
+            messages.append({"role": "system", "content": memory_prompt})
+            log_message("build_ai_messages", "debug", "Loaded memory prompt")
+    except FileNotFoundError:
+        log_message("build_ai_messages", "warning", f"Файл памяти не найден: {memory_prompt_file}")
+    
+    # 3. Добавляем историю диалога, если есть user_id
+    history = []
     if user_id:
         history = get_recent_chat_context(user_id)
         messages.extend(history)
         log_message("build_ai_messages", "message", f"Added {len(history)} history messages for user {user_id}")
     
-    # Добавляем текущее сообщение пользователя
+    # 4. Добавляем текущее сообщение пользователя
     messages.append({"role": "user", "content": user_message})
     
     log_message("build_ai_messages", "message", f"Persona: {persona_name}, total blocks: {len(messages)-len(history)-1}")
@@ -507,29 +557,53 @@ def ask_deepseek(messages: list) -> str:
 
 # Обрабатывает сообщение: формирует messages, вызывает AI, возвращает ответ."""
 def process_message(source: str, author: str, message: str, user_id: int = None) -> tuple:
-    
-    # Формируем список сообщений с историей
     messages = build_ai_messages(message, user_id)
-    log_message("process_message", "message", f"Messages built with history: {len(messages)} total")
-    
-    # Выбираем провайдера из конфига
     provider = config.get('ai', {}).get('default_provider', 'openai')
-    log_message("process_message", "message", f"Selected AI provider: {provider}")
     
-    ai_response = None
-    
+    # Первый вызов AI
     if provider == 'deepseek':
         ai_response = ask_deepseek(messages)
-    else:  # openai
+    else:
         ai_response = ask_openai(messages)
     
-    # Если провайдер не ответил — возвращаем ошибку
     if ai_response is None:
-        ai_response = f"Ошибка: AI-провайдер '{provider}' недоступен."
-        log_message("process_message", "error", ai_response)
+        return "core", "error", f"AI-провайдер '{provider}' недоступен."
     
-    # Возвращаем ответ от имени ai_model
-    return "core", provider, ai_response
+    # Проверяем, не запросил ли AI поиск в памяти
+    match = re.search(r'<SEARCH>(.*?)</SEARCH>', ai_response, re.DOTALL)
+    
+    if not match:
+        # Поиск не запрошен — возвращаем ответ как есть
+        return "core", provider, ai_response
+    
+    # Извлекаем запрос
+    search_query = match.group(1).strip()
+    log_message("process_message", "debug", f"AI запросил поиск: {search_query}")
+    
+    # Ищем чанки
+    if search_similar_chunks and user_id:
+        chunks = search_similar_chunks(user_id, search_query)
+        if chunks:
+            chunks_text = "\n\n".join([f"--- Чанк [{c['id']}] ---\n{c['text']}\n---" for c in chunks])
+            memory_context = f"Результаты поиска по запросу '{search_query}':\n\n{chunks_text}"
+        else:
+            memory_context = f"По запросу '{search_query}' во внешней памяти ничего не найдено."
+    else:
+        memory_context = f"Поиск во внешней памяти временно недоступен."
+    
+    # Добавляем результаты поиска в контекст
+    messages.append({"role": "system", "content": memory_context})
+    
+    # ВТОРОЙ вызов AI — теперь с результатами поиска
+    if provider == 'deepseek':
+        final_response = ask_deepseek(messages)
+    else:
+        final_response = ask_openai(messages)
+    
+    if final_response is None:
+        final_response = ai_response  # fallback
+    
+    return "core", provider, final_response
 
 
 # >============================================<
