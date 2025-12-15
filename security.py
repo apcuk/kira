@@ -2,13 +2,19 @@
 
 import os
 from typing import Set
-from logger import log_system
+from logger import setup_logging, log_system
 
 def load_whitelist() -> Set[int]:
     """
     Загружает whitelist из переменной окружения WHITELIST_TG.
     Формат: "123456789" (один ID)
     """
+
+    from dotenv import load_dotenv
+    
+    # ЗАГРУЗКА .env здесь
+    load_dotenv('conf/.env')
+
     whitelist_str = os.getenv('WHITELIST_TG', '').strip()
     
     if not whitelist_str:
@@ -37,7 +43,7 @@ class Security:
         allowed = user_id in self.whitelist
         
         if not allowed:
-            log_system("warning", f"Доступ запрещён для user_id={user_id}")
+            log_system("warning", f"Доступ запрещён для пользователя {user_id}")
         
         return allowed
     
