@@ -1,8 +1,4 @@
 # logger.py
-"""
-Система логирования для Kira-copilot.
-Три файла: chat.log, system.log, telegram.log
-"""
 
 import logging
 import os
@@ -13,7 +9,7 @@ from typing import Optional
 
 # ==================== КОНФИГУРАЦИЯ ====================
 LOG_DIR = "logs"
-MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
+MAX_FILE_SIZE = 1 * 1024 * 1024  # 10 MB
 BACKUP_COUNT = 5
 
 # ==================== ФОРМАТТЕРЫ ====================
