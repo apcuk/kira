@@ -3,12 +3,11 @@
 .env.local
 .env.production
 
+# Промпты и личности
+conf/*.md
+
 # Логи
 *.log
-
-# Все файлы с промптами кроме основного шаблона
-conf/prompts_*
-!conf/prompts_template.py
 
 # Папка вспомогательных отладочных скриптов
 /scrs/*
