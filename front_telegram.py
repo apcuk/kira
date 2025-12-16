@@ -5,6 +5,7 @@ import asyncio
 
 from telegram.ext import Application, MessageHandler, filters
 
+import router
 from logger import setup_logging, log_system
 from security import security
 
@@ -23,7 +24,7 @@ def tg_init_bot():
 async def tg_handle_message(update, context):
     """
     Обработчик входящих сообщений Telegram.
-    Проверяет whitelist, логирует, отправляет ответ.
+    Проверяет whitelist, логирует, передаёт в роутер.
     """
     user = update.message.from_user
     user_id = user.id
@@ -43,10 +44,28 @@ async def tg_handle_message(update, context):
     # 3. Отправляем действие "печатает..."
     await update.message.chat.send_action(action="typing")
     
-    # 4. ПРОСТОЙ ОТВЕТ (пока без AI)
-    response_text = f"Привет, {user_display_name}! Я Kira. Твоё сообщение: '{user_text}'"
+    # 4. СОБИРАЕМ ДАННЫЕ ДЛЯ РОУТЕРА
+    user_data = {
+        "user_id": user_id,  # реальный Telegram ID
+        "source": "telegram",
+        "message": user_text,
+        "metadata": {
+            "chat_id": update.message.chat_id,
+            "username": user_display_name,
+            "message_id": update.message.message_id,
+            "full_name": user.full_name if user.full_name else None
+        }
+    }
     
-    # 5. Логируем и отправляем ответ
+    # 5. ПЕРЕДАЁМ В РОУТЕР И ПОЛУЧАЕМ ОТВЕТ
+    try:
+        result = await router.route_message(user_data)
+        response_text = result["message"]
+    except Exception as e:
+        log_system("error", f"Ошибка в роутере: {e}")
+        response_text = "Ошибка обработки сообщения. Попробуйте позже."
+    
+    # 6. Логируем и отправляем ответ
     log_system("debug", f"Отправлено ответное сообщение пользователю {user_display_name} (TG ID: {user_id}): {response_text[:50]} ... ... ...")
     
     await update.message.reply_text(response_text)

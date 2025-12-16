@@ -1,1 +1,24 @@
 # conf/config.yaml
+
+memory:
+  session_timeout_hours: 6
+  search_chunks_limit: 3
+  tagging_batch_size: 10                  # сколько накопилось нетэгированных сообщений — запускаем тегирование    
+  chunk_size: 10                          # сообщений в чанке
+  chunk_step_size: 6                      # шаг перекрытия
+
+ai:
+  default_provider: openai                # openai / deepseek
+  persona: person_kira
+  context_messages_limit: 10
+  
+  openai:
+    model: gpt-5-mini                     # gpt-5 / gpt-5-mini / gpt-5.1
+    temperature: 0.99
+    max_tokens: 1024  
+
+  deepseek:
+    model: deepseek-chat
+    temperature: 0.99
+    max_tokens: 1024
+    base_url: https://api.deepseek.com    # для клиента OpenAI

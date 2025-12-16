@@ -1,6 +1,10 @@
 # main.py
 
-# v.3.03 - front_telegram.py - базовый обработчик ТГ. доработана система логирования.
+# v.3.05 - ai_provider.py - подключены AI-провайдеры
+
+# v.3.04 - router.py - система маршрутизации сообщений (забыл закомитить и запушить эту версию)
+
+# v.3.03 - front_telegram.py - базовый обработчик ТГ. доработана система логирования
 
 # v.3.02 - security.py - whitelist система
 
@@ -10,6 +14,10 @@
 
 
 import os
+import sys
+
+# Добавляем текущую директорию в путь Python
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from dotenv import load_dotenv
 
@@ -24,7 +32,7 @@ def main():
     # Явно инициализируем логирование
     setup_logging()
     
-    VERSION = "v.3.03"
+    VERSION = "v.3.05"
     
     log_system("info", f"Kira Copilot {VERSION} запущена")
 
