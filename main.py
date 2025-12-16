@@ -1,15 +1,11 @@
 # main.py
 
+# v.3.06 - отказ от асинхронной архитектуры.
 # v.3.05 - ai_provider.py - подключены AI-провайдеры
-
 # v.3.04 - router.py - система маршрутизации сообщений (забыл закомитить и запушить эту версию)
-
 # v.3.03 - front_telegram.py - базовый обработчик ТГ. доработана система логирования
-
 # v.3.02 - security.py - whitelist система
-
 # v.3.01 - logger.py - система логгирования
-
 # v.3.00 - Heloo, World. настройка скруктуры проекта, github'а, .env, .gitignore, requirements.txt 
 
 
@@ -32,7 +28,7 @@ def main():
     # Явно инициализируем логирование
     setup_logging()
     
-    VERSION = "v.3.05"
+    VERSION = "v.3.06"
     
     log_system("info", f"Kira Copilot {VERSION} запущена")
 

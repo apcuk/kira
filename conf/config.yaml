@@ -8,9 +8,9 @@ memory:
   chunk_step_size: 6                      # шаг перекрытия
 
 ai:
-  default_provider: openai                # openai / deepseek
+  default_provider: deepseek              # openai / deepseek
   persona: person_kira
-  context_messages_limit: 10
+  context_messages_limit: 20
   
   openai:
     model: gpt-5-mini                     # gpt-5 / gpt-5-mini / gpt-5.1

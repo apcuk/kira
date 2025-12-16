@@ -32,7 +32,6 @@ async def tg_handle_message(update, context):
     
     # 1. Проверка whitelist
     if not security.is_allowed(user_id):
-        # log_system("warning", f"Доступ запрещён для user_id={user_id}")
         denied_msg = security.get_access_denied_message()
         await update.message.reply_text(denied_msg)
         return
@@ -57,9 +56,10 @@ async def tg_handle_message(update, context):
         }
     }
     
-    # 5. ПЕРЕДАЁМ В РОУТЕР И ПОЛУЧАЕМ ОТВЕТ
+    # 5. ПЕРЕДАЁМ В РОУТЕР И ПОЛУЧАЕМ ОТВЕТ (синхронный вызов в отдельном потоке)
     try:
-        result = await router.route_message(user_data)
+        # Запускаем синхронный router в отдельном потоке, чтобы не блокировать event loop
+        result = await asyncio.to_thread(router.route_message, user_data)
         response_text = result["message"]
     except Exception as e:
         log_system("error", f"Ошибка в роутере: {e}")
@@ -93,8 +93,6 @@ def tg_run_bot():
         
         # Запускаем polling
         log_system("info", "Telegram бот запущен")
-        # print("Telegram бот запущен. Нажмите Ctrl+C для остановки.")
-        
         app.run_polling()
         
     except Exception as e:

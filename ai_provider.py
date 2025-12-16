@@ -3,7 +3,7 @@
 import os
 import yaml
 from typing import List, Dict, Any
-from openai import AsyncOpenAI
+from openai import OpenAI  # Синхронный клиент
 from logger import log_system, log_chat
 
 # ЗАГРУЗКА .env
@@ -55,7 +55,7 @@ AI_CONFIG = _load_config()
 
 # ============ ФОРМИРОВАНИЕ СООБЩЕНИЙ ============
 
-def _build_messages(user_message: str, persona: str = None) -> List[Dict]:
+def ai_build_messages(user_message: str, persona: str = None) -> List[Dict]:
     """
     Формирует список сообщений для OpenAI API.
     Загружает промпт из файла, разбивает на блоки по ##, убирает строки с ##.
@@ -106,19 +106,19 @@ def _build_messages(user_message: str, persona: str = None) -> List[Dict]:
 
 # ============ ПРОВАЙДЕРЫ API ============
 
-async def _deepseek_request(messages: List[Dict], config: Dict) -> str:
-    """Запрос к DeepSeek API"""
+def ai_deepseek_request(messages: List[Dict], config: Dict) -> str:
+    """Запрос к DeepSeek API (синхронный)"""
     api_key = config['deepseek']['api_key']
     if not api_key:
         raise ValueError("API_KEY_DEEPSEEK не задан в .env")
     
-    client = AsyncOpenAI(
+    client = OpenAI(
         api_key=api_key,
         base_url=config['deepseek']['base_url']
     )
     
     try:
-        response = await client.chat.completions.create(
+        response = client.chat.completions.create(
             model=config['deepseek']['model'],
             messages=messages,
             temperature=config['deepseek']['temperature'],
@@ -129,33 +129,45 @@ async def _deepseek_request(messages: List[Dict], config: Dict) -> str:
         log_system("error", f"Ошибка DeepSeek: {e}")
         raise
 
-async def _openai_request(messages: List[Dict], config: Dict) -> str:
-    """Запрос к OpenAI API через новый эндпоинт /responses для GPT-5+."""
+def ai_openai_request(messages: List[Dict], config: Dict) -> str:
+    """Запрос к OpenAI API (синхронный)"""
     api_key = config['openai']['api_key']
     model = config['openai']['model']
-
-    client = AsyncOpenAI(api_key=api_key)
-
+    
+    client = OpenAI(api_key=api_key)
+    
     try:
-        response = await client.responses.create(
-            model=model,
-            input=messages,  # Ключевое изменение: весь контекст здесь
-            max_output_tokens=config['openai']['max_tokens']  # Новый параметр!
-        )
-        return response.output_text.strip()
+        # Проверяем, поддерживает ли модель старый chat.completions API
+        if model.startswith('gpt-4') or model.startswith('gpt-3'):
+            # Старый API
+            response = client.chat.completions.create(
+                model=model,
+                messages=messages,
+                temperature=config['openai']['temperature'],
+                max_tokens=config['openai']['max_tokens']
+            )
+            return response.choices[0].message.content.strip()
+        else:
+            # Новый /responses API для GPT-5+
+            response = client.responses.create(
+                model=model,
+                input=messages,
+                max_output_tokens=config['openai']['max_tokens']
+            )
+            return response.output_text.strip()
     except Exception as e:
-        log_system("error", f"Ошибка OpenAI /responses: {e}")
+        log_system("error", f"Ошибка OpenAI: {e}")
         raise
 
 # ============ ОСНОВНОЙ ИНТЕРФЕЙС ============
 
-async def get_ai_response(
+def ai_get_response(
     user_message: str, 
     provider_name: str = None,
     persona: str = None
 ) -> tuple[str, str]:
     """
-    Основная функция для получения ответа от AI.
+    Основная функция для получения ответа от AI (синхронная).
     
     Параметры:
         user_message: текст сообщения пользователя
@@ -173,10 +185,8 @@ async def get_ai_response(
         persona = AI_CONFIG.get('persona')
     
     # Формируем сообщения
-    messages = _build_messages(user_message, persona)
+    messages = ai_build_messages(user_message, persona)
 
-    # log_system("info", f"Отправлено сообщение AI-моделе {provider_name}")
-    
     # Логируем промпт (безопасно)
     if messages and messages[0]['role'] == 'system':
         log_system("debug", f"Отправлено сообщение AI-моделе {provider_name}: {messages[0]['content'][:50]} ... ... ...")
@@ -184,9 +194,9 @@ async def get_ai_response(
     # Вызываем провайдера
     try:
         if provider_name == "deepseek":
-            response_text = await _deepseek_request(messages, AI_CONFIG)
+            response_text = ai_deepseek_request(messages, AI_CONFIG)
         elif provider_name == "openai":
-            response_text = await _openai_request(messages, AI_CONFIG)
+            response_text = ai_openai_request(messages, AI_CONFIG)
         else:
             raise ValueError(f"Неизвестный провайдер: {provider_name}")
         

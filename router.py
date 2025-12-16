@@ -1,11 +1,11 @@
 # router.py
 
 from logger import log_system, log_chat
-from ai_provider import get_ai_response
+from ai_provider import ai_get_response 
 
-async def route_message(user_data: dict) -> dict:
+def route_message(user_data: dict) -> dict:
     """
-    Основной маршрутизатор сообщений.
+    Основной маршрутизатор сообщений (синхронный).
     
     Принимает структурированное сообщение от любого фронтенда:
     {
@@ -39,7 +39,7 @@ async def route_message(user_data: dict) -> dict:
     log_chat(source, user_id, "USER", message, metadata.get("username"))
     
     # --- ПЕРЕДАЧА В AI-ОБРАБОТЧИК ---
-    ai_response, ai_provider = await _ai_processor(user_id, message, source, metadata)
+    ai_response, ai_provider = _ai_processor(user_id, message, source, metadata)
     
     # Логируем исходящий ответ
     log_system("info", f"Исходящее сообщение: {ai_response[:50]} ... ... ...")
@@ -54,20 +54,20 @@ async def route_message(user_data: dict) -> dict:
     }
 
 
-async def _ai_processor(user_id, message: str, source: str, metadata: dict) -> tuple:
+def _ai_processor(user_id, message: str, source: str, metadata: dict) -> tuple:
     """
     AI-процессор. Вызывает реальный AI-провайдер.
     Возвращает (ответ, имя_провайдера)
     """
     try:
-        response_text, provider = await get_ai_response(
+        response_text, provider = ai_get_response(  # <--- СИНХРОННЫЙ ВЫЗОВ
             user_message=message,
             provider_name=None,  # берётся из конфига
             persona=None  # берётся из конфига
         )
         return response_text, provider
     except Exception as e:
-        log_system("error", f"Ошибка в AI процессоре: {e}")     # избыточное логгирование. то же самое дублируется из модуля ai_provider
+        log_system("error", f"Ошибка в AI процессоре: {e}")
         # Fallback: заглушка
         username = metadata.get("username", f"user_{user_id}")
         fallback_response = f" AI недоступен."
