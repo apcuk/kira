@@ -1,5 +1,9 @@
 # conf/config.yaml
 
+aliases:
+  alias_user: "apcuk"                     # алиас пользователя в БД
+  alias_ai: "kira"                       # алиас AI в БД
+
 memory:
   session_timeout_hours: 6
   search_chunks_limit: 3

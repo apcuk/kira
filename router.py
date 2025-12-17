@@ -1,7 +1,11 @@
 # router.py
 
 from logger import log_system, log_chat
-from ai_provider import ai_get_response 
+from ai_provider import ai_get_response
+from database import db_save_message
+from config_loader import config_get_aliases
+
+alias_user, alias_ai = config_get_aliases()
 
 def route_message(user_data: dict) -> dict:
     """
@@ -37,6 +41,10 @@ def route_message(user_data: dict) -> dict:
     # Логируем входящее сообщение
     log_system("info", f"Входящее сообщение: {message[:50]} ... ... ...")
     log_chat(source, user_id, "USER", message, metadata.get("username"))
+
+    # Сохраняем входящее сообщение в БД
+    # log_system("debug", f"metadata username: {metadata.get('username')}, user_id: {user_id}")
+    db_save_message(source=source, author=alias_user, message=message)
     
     # --- ПЕРЕДАЧА В AI-ОБРАБОТЧИК ---
     ai_response, ai_provider = _ai_processor(user_id, message, source, metadata)
@@ -44,6 +52,9 @@ def route_message(user_data: dict) -> dict:
     # Логируем исходящий ответ
     log_system("info", f"Исходящее сообщение: {ai_response[:50]} ... ... ...")
     log_chat("router", ai_provider, ai_provider, ai_response)
+
+    # Сохраняем исходящее сообщение в БД
+    db_save_message(source=ai_provider, author=alias_ai, message=ai_response)
     
     # Формируем ответ для фронтенда
     return {
