@@ -85,11 +85,14 @@ def ai_build_messages(user_message: str, persona: str = None, include_history: b
 
 # ============ ПРОВАЙДЕРЫ API ============
 
-def ai_deepseek_request(messages: List[Dict]) -> str:
+def ai_deepseek_request(messages: List[Dict], model: str = None) -> str:
     """Запрос к DeepSeek API (синхронный)"""
     api_key = os.getenv('API_KEY_DEEPSEEK')
     if not api_key:
         raise ValueError("API_KEY_DEEPSEEK не задан в .env")
+    
+    if model is None:
+        model = config_get('ai.deepseek.model', 'deepseek-chat')
     
     client = OpenAI(
         api_key=api_key,
@@ -98,7 +101,7 @@ def ai_deepseek_request(messages: List[Dict]) -> str:
     
     try:
         response = client.chat.completions.create(
-            model=config_get('ai.deepseek.model', 'deepseek-chat'),
+            model=model,
             messages=messages,
             temperature=config_get('ai.deepseek.temperature', 0.99),
             max_tokens=config_get('ai.deepseek.max_tokens', 1024)
@@ -108,13 +111,15 @@ def ai_deepseek_request(messages: List[Dict]) -> str:
         log_system("error", f"Ошибка DeepSeek: {e}")
         raise
 
-def ai_openai_request(messages: List[Dict]) -> str:
+def ai_openai_request(messages: List[Dict], model: str = None) -> str:
     """Запрос к OpenAI API (синхронный)"""
     api_key = os.getenv('API_KEY_OPENAI')
     if not api_key:
         raise ValueError("API_KEY_OPENAI не задан в .env")
     
-    model = config_get('ai.openai.model', 'gpt-4o-mini')
+    if model is None:
+        model = config_get('ai.openai.model', 'gpt-4o-mini')
+    
     client = OpenAI(api_key=api_key)
     
     try:
@@ -137,7 +142,9 @@ def ai_openai_request(messages: List[Dict]) -> str:
             )
             return response.output_text.strip()
     except Exception as e:
-        log_system("error", f"Ошибка OpenAI: {e}")
+        log_system("error", f"Ошибка OpenAI (модель {model}): {e}")
+        if hasattr(e, 'response') and e.response:
+           log_system("debug", f"Тело ответа ошибки OpenAI: {e.response.text}")
         raise
 
 # ============ ОСНОВНОЙ ИНТЕРФЕЙС ============

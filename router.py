@@ -2,8 +2,9 @@
 
 from logger import log_system, log_chat
 from ai_provider import ai_get_response
-from database import db_save_message
-from config_loader import config_get_aliases
+from database import db_save_message, db_count_untagged_messages
+from config_loader import config_get_aliases, config_get
+from memory_manager import mm_create_tags
 
 alias_user, alias_ai = config_get_aliases()
 
@@ -43,8 +44,16 @@ def route_message(user_data: dict) -> dict:
     log_chat(source, user_id, "USER", message, metadata.get("username"))
 
     # Сохраняем входящее сообщение в БД
-    # log_system("debug", f"metadata username: {metadata.get('username')}, user_id: {user_id}")
     db_save_message(source=source, author=alias_user, message=message)
+
+    # Инициализация процесса тегирования
+    untagged_count = db_count_untagged_messages()
+    tagging_batch_size = config_get('memory.tagging_batch_size', 10)
+
+    if untagged_count >= tagging_batch_size:
+        # Запускаем в отдельном потоке, чтобы не блокировать ответ
+        import threading
+        threading.Thread(target=mm_create_tags, daemon=True).start()
     
     # --- ПЕРЕДАЧА В AI-ОБРАБОТЧИК ---
     ai_response, ai_provider = _ai_processor(user_id, message, source, metadata)

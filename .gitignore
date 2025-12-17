@@ -5,6 +5,7 @@
 
 # Промпты и личности
 conf/*.md
+!conf/prompt_tags.md
 
 # Логи
 *.log

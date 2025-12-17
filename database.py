@@ -124,6 +124,40 @@ def db_save_message(source: str, author: str, message: str):
     finally:
         conn.close()
 
+def db_get_untagged_messages(conn, limit: int = 10):
+    """
+    Возвращает сообщения без тегов (tag_weight IS NULL)
+    Возвращает список словарей с ключами: id, source, author, message
+    """
+    cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+    cur.execute('''
+        SELECT id, source, author, message
+        FROM chatlog
+        WHERE tag_weight IS NULL
+        ORDER BY created_at ASC
+        LIMIT %s
+    ''', (limit,))
+    
+    rows = cur.fetchall()
+    # Преобразуем в список словарей для удобства
+    return [dict(row) for row in rows]
+
+def db_update_message_tags(conn, message_id: int, weight: int, topics: list):
+    """
+    Обновляет теги сообщения.
+    topics: список строк, например ["#здоровье", "#планы"]
+    """
+    cur = conn.cursor()
+    cur.execute('''
+        UPDATE chatlog
+        SET tag_weight = %s, tag_topics = %s
+        WHERE id = %s
+    ''', (weight, topics, message_id))
+    
+    # Проверяем, что обновили именно одну строку
+    if cur.rowcount != 1:
+        log_system("warning", f"Обновлено {cur.rowcount} строк вместо 1 для message_id={message_id}")
+
 def db_get_recent_messages(limit: int = 10):
     """Возвращает последние limit сообщений из chatlog"""
     conn = db_get_connection()
@@ -137,5 +171,18 @@ def db_get_recent_messages(limit: int = 10):
         ''', (limit,))
         rows = cur.fetchall()
         return rows
+    finally:
+        conn.close()
+
+def db_count_untagged_messages():
+    """Возвращает количество нетэгированных сообщений"""
+    conn = db_get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute('''
+            SELECT COUNT(*) FROM chatlog 
+            WHERE tag_weight IS NULL
+        ''')
+        return cur.fetchone()[0]
     finally:
         conn.close()

@@ -4,12 +4,6 @@ aliases:
   alias_user: "apcuk"                     # алиас пользователя в БД
   alias_ai: "kira"                       # алиас AI в БД
 
-memory:
-  session_timeout_hours: 6
-  search_chunks_limit: 3
-  tagging_batch_size: 10                  # сколько накопилось нетэгированных сообщений — запускаем тегирование    
-  chunk_size: 10                          # сообщений в чанке
-  chunk_step_size: 6                      # шаг перекрытия
 
 ai:
   default_provider: deepseek              # openai / deepseek
@@ -26,3 +20,14 @@ ai:
     temperature: 0.99
     max_tokens: 1024
     base_url: https://api.deepseek.com    # для клиента OpenAI
+
+memory:
+  session_timeout_hours: 4
+  tagging_batch_size: 20                  # количество не тэгированых сообщений, необходимое для инициализации процесса тегирования    
+  search_chunks_limit: 3
+  chunk_size: 10                          # сообщений в чанке
+  chunk_step_size: 6                      # шаг перекрытия
+
+  tagger_provider: openai                 # провайдер для тэгирования. deepseek или openai
+  tagger_model: gpt-4o-mini               # модель для тэгирования
+  tagger_prompt_file: conf/prompt_tags.md
