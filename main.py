@@ -1,5 +1,6 @@
 # main.py
 
+# v.3.09 - реализовано чанкование и векторизация сообщений чат-лога.
 # v.3.08 - memory_manager.py - модуль менеджера памяти. реализовано тегирование сообщений в БД.
 # v.3.07 - database.py + config_loader.py. сохранение чат-лога в БД. вынос работы с конфигами во внешний модуль.
 # v.3.06 - отказ от асинхронной архитектуры.
@@ -14,14 +15,14 @@
 import os
 import sys
 
-# Добавляем текущую директорию в путь Python
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
 from dotenv import load_dotenv
 
 from logger import setup_logging, log_system
 from front_telegram import tg_run_bot
 from database import db_init_tables
+
+# Добавляем текущую директорию в путь Python
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 def main():
     # Загружаем .env ПЕРВЫМ делом

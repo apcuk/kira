@@ -1,4 +1,6 @@
 # memory_manager.py
+
+import os
 import time
 import threading
 import json
@@ -12,9 +14,10 @@ from database import (
     db_get_untagged_messages,
     db_update_message_tags,
     db_get_recent_messages,
-    # db_save_chunk,
-    # db_get_chunks_without_embeddings,
-    # db_update_chunk_embedding
+    db_get_unchunked_messages,
+    db_save_chunk,
+    db_get_chunks_without_embeddings,
+    db_update_chunk_embedding
 )
 
 
@@ -141,19 +144,94 @@ def mm_create_tags(batch_size: int = None):
 
 # ============ ЧАНКОВАНИЕ ============
 def mm_create_chunks(chunk_size: int = None, overlap: int = None):
-    """Создаёт чанки если накопилось достаточно сообщений"""
+    """Создаёт один чанк если накопилось достаточно сообщений"""
+    
+    log_system("debug", f"mm_create_chunks вызван, функции передан chunk_size={chunk_size}")
+
     if chunk_size is None:
         chunk_size = config_get('memory.chunk_size', 10)
     if overlap is None:
         overlap = config_get('memory.chunk_step_size', 3)
     
-    pass
+    conn = db_get_connection()
+    try:
+        # Получаем сообщения для чанка
+        messages = db_get_unchunked_messages(conn, limit=chunk_size, min_weight=2)
+        
+        if len(messages) < chunk_size:
+            log_system("debug", f"Недостаточно сообщений для чанка: {len(messages)}/{chunk_size}")
+            return
+        
+        log_system("info", f"Создаём чанк из {len(messages)} сообщений")
+        
+        # Формируем текст чанка
+        chunk_text = ""
+        message_ids = []
+        
+        for msg in messages:
+            chunk_text += f"{msg['author']}: {msg['message']}\n"
+            message_ids.append(msg['id'])
+        
+        # Сохраняем чанк
+        db_save_chunk(conn, chunk_text.strip(), message_ids)
+        
+        conn.commit()
+        log_system("info", f"Чанк сохранён (сообщения {message_ids[0]}-{message_ids[-1]})")
+        
+    except Exception as e:
+        log_system("error", f"Ошибка создания чанка: {e}")
+        conn.rollback()
+    finally:
+        conn.close()
 
 
 # ============ ВЕКТОРИЗАЦИЯ ============
-def mm_create_vectors():
-    """Векторизует чанки без эмбеддингов"""
-    pass
+def mm_create_vectors(limit: int = None):
+    """Векторизует чанки без эмбеддингов через OpenAI Embeddings API"""
+    if limit is None:
+        limit = config_get('memory.embedding_batch_size', 1)
+    
+    conn = db_get_connection()
+    try:
+        chunks = db_get_chunks_without_embeddings(conn, limit=limit)
+        if not chunks:
+            log_system("info", "Нет чанков для векторизации")
+            return
+        
+        log_system("info", f"Начинаем векторизацию {len(chunks)} чанков")
+        
+        api_key = os.getenv('API_KEY_OPENAI')
+        if not api_key:
+            log_system("error", "API_KEY_OPENAI не задан")
+            return
+        
+        from openai import OpenAI
+        client = OpenAI(api_key=api_key)
+        
+        for chunk in chunks:
+            try:
+                response = client.embeddings.create(
+                    model="text-embedding-3-small",
+                    input=chunk['chunk_text'],
+                    encoding_format="float"
+                )
+                
+                embedding = response.data[0].embedding
+                db_update_chunk_embedding(conn, chunk['id'], embedding)
+                log_system("info", f"Чанк {chunk['id']} векторизован")
+                
+            except Exception as e:
+                log_system("error", f"Ошибка векторизации чанка {chunk['id']}: {e}")
+                continue
+        
+        conn.commit()
+        log_system("info", f"Векторизация завершена для {len(chunks)} чанков")
+        
+    except Exception as e:
+        log_system("error", f"Ошибка при работе функции mm_create_vectors: {e}")
+        conn.rollback()
+    finally:
+        conn.close()
 
 
 # ============ ФОНОВАЯ ЗАДАЧА ============

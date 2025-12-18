@@ -27,6 +27,7 @@ memory:
   search_chunks_limit: 3
   chunk_size: 10                          # сообщений в чанке
   chunk_step_size: 6                      # шаг перекрытия
+  embedding_batch_size: 1                 # сколько чанков векторизовать за раз
 
   tagger_provider: openai                 # провайдер для тэгирования. deepseek или openai
   tagger_model: gpt-4o-mini               # модель для тэгирования

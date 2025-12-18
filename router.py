@@ -1,10 +1,12 @@
 # router.py
 
+import threading
+
 from logger import log_system, log_chat
 from ai_provider import ai_get_response
-from database import db_save_message, db_count_untagged_messages
+from database import db_save_message, db_count_untagged_messages, db_count_unchunked_messages
 from config_loader import config_get_aliases, config_get
-from memory_manager import mm_create_tags
+from memory_manager import mm_create_tags, mm_create_chunks, mm_create_vectors
 
 alias_user, alias_ai = config_get_aliases()
 
@@ -46,15 +48,6 @@ def route_message(user_data: dict) -> dict:
     # Сохраняем входящее сообщение в БД
     db_save_message(source=source, author=alias_user, message=message)
 
-    # Инициализация процесса тегирования
-    untagged_count = db_count_untagged_messages()
-    tagging_batch_size = config_get('memory.tagging_batch_size', 10)
-
-    if untagged_count >= tagging_batch_size:
-        # Запускаем в отдельном потоке, чтобы не блокировать ответ
-        import threading
-        threading.Thread(target=mm_create_tags, daemon=True).start()
-    
     # --- ПЕРЕДАЧА В AI-ОБРАБОТЧИК ---
     ai_response, ai_provider = _ai_processor(user_id, message, source, metadata)
     
@@ -64,6 +57,26 @@ def route_message(user_data: dict) -> dict:
 
     # Сохраняем исходящее сообщение в БД
     db_save_message(source=ai_provider, author=alias_ai, message=ai_response)
+
+    # Инициализация процессов памяти
+    untagged_count = db_count_untagged_messages()
+    unchunked_count = db_count_unchunked_messages()
+
+    tagging_batch_size = config_get('memory.tagging_batch_size', 10)
+    chunk_size = config_get('memory.chunk_size', 10)
+
+    log_system("info", f"Нетэгированных сообщений {untagged_count}, незачанкованных сообщений {unchunked_count}")
+
+    if untagged_count >= tagging_batch_size:
+        log_system("info", f"Запуск тэгирования для {untagged_count} сообщений")
+        mm_create_tags()
+        
+    if unchunked_count >= chunk_size:
+        log_system("info", f"Запуск чанкования для {unchunked_count} сообщений")
+        mm_create_chunks() 
+
+    # Векторизация всегда, если есть что векторизовать
+    mm_create_vectors()                 
     
     # Формируем ответ для фронтенда
     return {
