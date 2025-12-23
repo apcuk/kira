@@ -78,7 +78,7 @@ def db_init_tables():
         ''')
         
         conn.commit()
-        log_system("info", "Таблицы и индексы инициализированы")
+        log_system("info", "Таблицы и индексы БД инициализированы")
     finally:
         conn.close()
 
@@ -105,7 +105,7 @@ def db_get_or_create_session_id():
             last_session_id, last_created = row
             # Проверяем, не истекла ли сессия
             if (now - last_created) <= timedelta(hours=timeout_hours):
-                log_system("debug", f"Продолжена сессия: {last_session_id}")
+                log_system("info", f"Продолжена сессия: {last_session_id}")
                 return last_session_id
         
         # Новая сессия
@@ -116,20 +116,29 @@ def db_get_or_create_session_id():
     finally:
         conn.close()
 
-def db_save_message(source: str, author: str, message: str):
-    """Сохраняет сообщение, автоматически определяя session_id"""
+def db_save_message(source: str, author: str, message: str, tag_weight: int = 2, tag_topics: list = None):
+    """Сохраняет сообщение, автоматически определяя session_id.
+    По умолчанию tag_weight=2 (для обычных сообщений).
+    Для служебных сообщений передавать tag_weight=0.
+    """
     session_id = db_get_or_create_session_id()
     
     conn = db_get_connection()
     try:
         cur = conn.cursor()
-        cur.execute('''
-            INSERT INTO chatlog (source, author, message, session_id)
-            VALUES (%s, %s, %s, %s)
-        ''', (source, author, message, session_id))
+        if tag_topics is not None:
+            cur.execute('''
+                INSERT INTO chatlog (source, author, message, session_id, tag_weight, tag_topics)
+                VALUES (%s, %s, %s, %s, %s, %s)
+            ''', (source, author, message, session_id, tag_weight, tag_topics))
+        else:
+            cur.execute('''
+                INSERT INTO chatlog (source, author, message, session_id, tag_weight)
+                VALUES (%s, %s, %s, %s, %s)
+            ''', (source, author, message, session_id, tag_weight))
         
         conn.commit()
-        log_system("info", f"Сообщение сохранено в БД (сессия {session_id}): {author[:20]}...")
+        log_system("info", f"Сообщение сохранено в БД (сессия {session_id}, автор {author})")
     finally:
         conn.close()
 
@@ -154,7 +163,6 @@ def db_get_untagged_messages(conn, limit: int = 10):
 def db_update_message_tags(conn, message_id: int, weight: int, topics: list):
     """
     Обновляет теги сообщения.
-    topics: список строк, например ["#здоровье", "#планы"]
     """
     cur = conn.cursor()
     cur.execute('''
@@ -167,13 +175,14 @@ def db_update_message_tags(conn, message_id: int, weight: int, topics: list):
     if cur.rowcount != 1:
         log_system("warning", f"Обновлено {cur.rowcount} строк вместо 1 для message_id={message_id}")
 
+
 def db_get_recent_messages(limit: int = 10):
     """Возвращает последние limit сообщений из chatlog"""
     conn = db_get_connection()
     try:
         cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
         cur.execute('''
-            SELECT source, author, message, created_at
+            SELECT source, author, message, created_at, tag_topics
             FROM chatlog
             ORDER BY created_at DESC
             LIMIT %s
@@ -182,6 +191,7 @@ def db_get_recent_messages(limit: int = 10):
         return rows
     finally:
         conn.close()
+
 
 def db_count_untagged_messages():
     """Возвращает количество нетэгированных сообщений"""
@@ -196,8 +206,8 @@ def db_count_untagged_messages():
     finally:
         conn.close()
 
-def db_count_unchunked_messages(min_weight: int = 2):
-    """Возвращает количество сообщений, готовых для чанкования"""
+def db_count_unchunked_messages():
+    """Возвращает количество сообщений, готовых для чанкования (tag_weight >= 1)"""
     conn = db_get_connection()
     try:
         cur = conn.cursor()
@@ -207,8 +217,8 @@ def db_count_unchunked_messages(min_weight: int = 2):
         cur.execute('''
             SELECT COUNT(*) 
             FROM chatlog 
-            WHERE id > %s AND tag_weight >= %s
-        ''', (last_id, min_weight))
+            WHERE id > %s AND tag_weight >= 1
+        ''', (last_id,))
         
         return cur.fetchone()[0]
     finally:
@@ -226,9 +236,9 @@ def db_get_last_chunked_message_id(conn):
     row = cur.fetchone()
     return row[0] if row and row[0] is not None else 0
 
-def db_get_unchunked_messages(conn, limit: int, min_weight: int = 2):
+def db_get_unchunked_messages(conn, limit: int):
     """
-    Возвращает сообщения, которых нет в чанках и с tag_weight >= min_weight.
+    Возвращает сообщения, которых нет в чанках и с tag_weight >= 1.
     Берёт начиная с последнего зачанкованного ID.
     """
     last_id = db_get_last_chunked_message_id(conn)
@@ -238,10 +248,10 @@ def db_get_unchunked_messages(conn, limit: int, min_weight: int = 2):
         SELECT id, author, message, tag_weight, tag_topics
         FROM chatlog
         WHERE id > %s 
-          AND tag_weight >= %s
+          AND tag_weight >= 1
         ORDER BY id ASC
         LIMIT %s
-    ''', (last_id, min_weight, limit))
+    ''', (last_id, limit))
     
     rows = cur.fetchall()
     return [dict(row) for row in rows]

@@ -91,16 +91,16 @@ def mm_ai_message_tagger(messages_batch):
                 results.append({'weight': weight, 'topics': tags})
                 
             except Exception as e:
-                log_system("warning", f"Ошибка парсинга строки '{line}': {e}")
+                log_system("error", f"Ошибка парсинга строки '{line}': {e}")
                 results.append({'weight': 2, 'topics': ["#_ошибка_тегирования"]})
         
         return results
         
     except Exception as e:
         log_system("error", f"Ошибка AI тэгирования: {e}")
-        log_system("debug", f"Промпт (первые 1000 символов): {full_prompt[:1000]}")
+        log_system("debug", f"Промпт: {full_prompt}")
         if hasattr(e, 'response'):
-            log_system("debug", f"Статус: {e.response.status_code}, Тело: {e.response.text}")
+            log_system("warning", f"Статус: {e.response.status_code}, Тело: {e.response.text}")
         return [{'weight': 2, 'topics': ["#_ошибка_тегирования"]} for _ in range(batch_size)]
 
 
@@ -146,8 +146,6 @@ def mm_create_tags(batch_size: int = None):
 def mm_create_chunks(chunk_size: int = None, overlap: int = None):
     """Создаёт один чанк если накопилось достаточно сообщений"""
     
-    log_system("debug", f"mm_create_chunks вызван, функции передан chunk_size={chunk_size}")
-
     if chunk_size is None:
         chunk_size = config_get('memory.chunk_size', 10)
     if overlap is None:
@@ -156,10 +154,10 @@ def mm_create_chunks(chunk_size: int = None, overlap: int = None):
     conn = db_get_connection()
     try:
         # Получаем сообщения для чанка
-        messages = db_get_unchunked_messages(conn, limit=chunk_size, min_weight=2)
+        messages = db_get_unchunked_messages(conn, limit=chunk_size)
         
         if len(messages) < chunk_size:
-            log_system("debug", f"Недостаточно сообщений для чанка: {len(messages)}/{chunk_size}")
+            log_system("info", f"Недостаточно сообщений для чанка: {len(messages)}/{chunk_size}")
             return
         
         log_system("info", f"Создаём чанк из {len(messages)} сообщений")
@@ -218,7 +216,7 @@ def mm_create_vectors(limit: int = None):
                 
                 embedding = response.data[0].embedding
                 db_update_chunk_embedding(conn, chunk['id'], embedding)
-                log_system("info", f"Чанк {chunk['id']} векторизован")
+                log_system("info", f"Чанк #{chunk['id']} векторизован")
                 
             except Exception as e:
                 log_system("error", f"Ошибка векторизации чанка {chunk['id']}: {e}")
@@ -232,25 +230,6 @@ def mm_create_vectors(limit: int = None):
         conn.rollback()
     finally:
         conn.close()
-
-
-# ============ ФОНОВАЯ ЗАДАЧА ============
-def mm_background_worker(interval_sec: int = None):
-    """Фоновая задача для обработки памяти"""
-    if interval_sec is None:
-        interval_sec = config_get('memory.background_interval_sec', 60)
-    
-    log_system("info", f"Фоновая задача памяти запущена (интервал {interval_sec}с)")
-    
-    while True:
-        try:
-            mm_create_tags()
-            mm_create_chunks()
-            mm_create_vectors()
-        except Exception as e:
-            log_system("error", f"Ошибка в фоновой задаче памяти: {e}")
-        
-        time.sleep(interval_sec)
 
 
 # ============ ЗАПУСК ============

@@ -12,7 +12,7 @@ MAX_FILE_SIZE = 1 * 1024 * 1024
 BACKUP_COUNT = 5
 
 class SimpleFormatter(logging.Formatter):
-    """Форматтер: время [уровень.модуль.функция] сообщение"""
+    """Форматтер для файлов: полная дата [уровень.модуль.функция] сообщение"""
     
     def format(self, record):
         time_str = datetime.fromtimestamp(record.created).strftime('%Y-%m-%d %H:%M:%S')
@@ -20,6 +20,58 @@ class SimpleFormatter(logging.Formatter):
         name = record.name
         
         return f"{time_str} [{level}.{name}] {record.getMessage()}"
+
+class ConsoleFormatter(logging.Formatter):
+    """Форматтер для консоли с цветами (только текст сообщения)"""
+    
+    # ANSI коды цветов
+    COLORS = {
+        'debug': '\033[90m',      # серый
+        'info': '\033[0m',        # обычный
+        'warning': '\033[33m',    # желтый
+        'error': '\033[31m',      # красный
+        'critical': '\033[41m',   # красный фон
+        'blue': '\033[94m',       # синий (для поисковых запросов)
+        'reset': '\033[0m'        # сброс
+    }
+    
+    def format(self, record):
+        time_str = datetime.fromtimestamp(record.created).strftime('%d/%m %H:%M:%S')
+        level = record.levelname.lower()
+        name = record.name
+        message = record.getMessage()
+        
+        # Базовая строка без цвета (дата и уровень)
+        base_str = f"{time_str} [{level}.{name}] "
+        
+        # Определяем цвет для текста сообщения
+        message_color = self.COLORS['info']  # по умолчанию
+        
+        # Подсвечиваем СИНИМ поисковые запросы и события памяти
+        search_triggers = [
+            'Обнаружен поисковый запрос',
+            'поисковый запрос',
+            '<SEARCH>',
+            'Найдено чанков',
+            'ID чанков',
+            'векторизован поисковый запрос',
+            'поиск по запросу'
+        ]
+        
+        if any(trigger.lower() in message.lower() for trigger in search_triggers):
+            message_color = self.COLORS['blue']  # СИНИЙ для поиска
+        
+        # Ошибки - красный текст
+        if level == 'error':
+            message_color = self.COLORS['error']
+        
+        # Предупреждения - желтый текст
+        if level == 'warning':
+            message_color = self.COLORS['warning']
+        
+        # Формируем: обычная дата+уровень + цветной текст сообщения
+        formatted = f"{base_str}{message_color}{message}{self.COLORS['reset']}"
+        return formatted
 
 def setup_logging():
     """Настраивает логирование: файл + консоль"""
@@ -47,10 +99,10 @@ def setup_logging():
     chat_handler.setLevel(logging.INFO)  # Все сообщения чата идут как INFO
     chat_handler.setFormatter(logging.Formatter('%(message)s'))  # Только само сообщение
     
-    # 3. Консоль
+    # 3. Консоль с короткой датой и цветами (только INFO и выше)
     console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setLevel(logging.DEBUG)
-    console_handler.setFormatter(logging.Formatter('[%(levelname)s.%(name)s] %(message)s'))
+    console_handler.setLevel(logging.INFO)
+    console_handler.setFormatter(ConsoleFormatter())
     
     # 4. Настройка корневого логгера
     root_logger = logging.getLogger()
@@ -104,23 +156,14 @@ def log_system(level: str, message: str, module: str = None, func: str = None):
     getattr(logger, level.lower())(message)
 
 
-def log_chat(source: str, user_id, role: str, message: str, display_name: str = None):
+def log_chat(source: str, name: str, message: str):
     """
-    Логирует сообщение чата через выделенный логгер chat.
-    display_name: username или first_name (если есть)
+    Логирует сообщение чата в формате: [источник.имя] текст
     """
-    # Форматируем user идентификатор
-    if display_name and display_name != f"user_{user_id}":
-        user_ident = display_name  # Только имя, без ID
-    else:
-        user_ident = str(user_id)
-    
-    # Форматируем запись
     time_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     safe_message = message.replace('\n', '\\n')
-    log_line = f"{time_str} [{source}.{user_ident}] {role}: {safe_message}"
+    log_line = f"{time_str} [{source}.{name}] {safe_message}"
     
-    # Используем выделенный логгер
     chat_logger = logging.getLogger("chat")
     chat_logger.info(log_line)
 

@@ -16,19 +16,25 @@ ai:
     max_tokens: 1024  
 
   deepseek:
-    model: deepseek-chat
+    model: deepseek-chat                  # deepseek-chat / deepseek-reasoner
     temperature: 0.99
     max_tokens: 1024
     base_url: https://api.deepseek.com    # для клиента OpenAI
 
 memory:
+  memory_prompt_file: conf/prompt_memory.md
   session_timeout_hours: 4
   tagging_batch_size: 20                  # количество не тэгированых сообщений, необходимое для инициализации процесса тегирования    
   search_chunks_limit: 3
   chunk_size: 10                          # сообщений в чанке
   chunk_step_size: 6                      # шаг перекрытия
   embedding_batch_size: 1                 # сколько чанков векторизовать за раз
-
+  max_recursion_depth: 3                  # Максимальное количество последовательных поисковых запросов в рамках одного пользовательского сообщения
+  search_similarity_threshold: 0.25       # >0.5 — очень высокая релевантность (синонимы, перефразирование той же темы), 
+                                          # 0.35–0.5 — умеренная релевантность (смежные темы, общий контекст),
+                                          # 0.25–0.35 — слабая релевантность (могут быть общие слова, но тема другая)
+                                          # <0.25 — скорее шум
+  tagger_prompt_file: conf/prompt_tags.md
   tagger_provider: openai                 # провайдер для тэгирования. deepseek или openai
   tagger_model: gpt-4o-mini               # модель для тэгирования
-  tagger_prompt_file: conf/prompt_tags.md
+

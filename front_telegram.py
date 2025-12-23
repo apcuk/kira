@@ -8,6 +8,9 @@ from telegram.ext import Application, MessageHandler, filters
 import router
 from logger import setup_logging, log_system
 from security import security
+# from config_loader import config_get_aliases
+
+# alias_user, alias_ai = config_get_aliases()
 
 def tg_init_bot():
     """Инициализирует и возвращает Telegram бота"""
@@ -38,7 +41,8 @@ async def tg_handle_message(update, context):
     
     # 2. Пользователь разрешён — логируем сообщение
     user_display_name = user.username or user.first_name or f"user_{user_id}"
-    log_system("debug", f"Получено сообщение от пользователя {user_display_name} (TG ID: {user_id}): {user_text[:50]} ... ... ...")
+    log_system("info", f"Получено сообщение от пользователя {user_display_name} (TG ID: {user_id})")
+    # log_system("debug", f"{alias_user}: {user_text}")     # логировать полное сообщение будем в роутере, не тут
     
     # 3. Отправляем действие "печатает..."
     await update.message.chat.send_action(action="typing")
@@ -66,7 +70,8 @@ async def tg_handle_message(update, context):
         response_text = "Ошибка обработки сообщения. Попробуйте позже."
     
     # 6. Логируем и отправляем ответ
-    log_system("debug", f"Отправлено ответное сообщение пользователю {user_display_name} (TG ID: {user_id}): {response_text[:50]} ... ... ...")
+    log_system("info", f"Отправлено ответное сообщение пользователю {user_display_name} (TG ID: {user_id})")
+    # log_system("debug", f"{alias_ai}: {response_text}")     # логировать полное сообщение будем в роутере, не тут
     
     await update.message.reply_text(response_text)
 
@@ -81,7 +86,7 @@ async def tg_error_handler(update, context):
 def tg_run_bot():
     """Запускает Telegram бота"""
     
-    log_system("info", "Запуск Telegram бота...")
+    log_system("info", "Запуск Telegram бота")
     
     try:
         # Инициализация

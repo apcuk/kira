@@ -5,6 +5,8 @@
 
 # Промпты и личности
 conf/*.md
+!conf/person_kira.md
+!conf/prompt_memory.md
 !conf/prompt_tags.md
 
 # Логи

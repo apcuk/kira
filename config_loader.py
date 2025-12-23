@@ -17,7 +17,7 @@ def config_load():
         log_system("info", "Конфигурация загружена")
         return _CONFIG
     except Exception as e:
-        log_system("error", f"Ошибка загрузки конфига: {e}")
+        log_system("error", f"Ошибка загрузки конфигурации: {e}")
         return {}
 
 def config_get(key=None, default=None):
