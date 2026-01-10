@@ -8,7 +8,7 @@ aliases:
 ai:
   default_provider: deepseek              # openai / deepseek
   persona: person_kira
-  context_messages_limit: 20
+  context_messages_limit: 30
   
   openai:
     model: gpt-5-mini                     # gpt-5 / gpt-5-mini / gpt-5.1

@@ -1,11 +1,10 @@
-# router.py
-
 import re
 import threading
+from datetime import datetime  # <--- ДОБАВИЛ ИМПОРТ
 
 from logger import log_system, log_chat
 from ai_provider import ai_get_response
-from database import db_save_message, db_count_untagged_messages, db_count_unchunked_messages
+from database import db_save_message, db_count_untagged_messages, db_count_unchunked_messages, db_check_new_session  # <--- ДОБАВИЛ db_check_new_session
 from config_loader import config_get_aliases, config_get
 from memory_manager import mm_create_tags, mm_create_chunks, mm_create_vectors
 from memory_search import ms_process_search_request
@@ -58,8 +57,27 @@ def route_message(user_data: dict) -> dict:
     log_system("debug", f"{alias_user}: {message.replace('\n', ' ')}")
     log_chat(source, alias_user, message.replace('\n', ' '))
 
-    # Сохраняем входящее сообщение в БД
-    db_save_message(source=source, author=alias_user, message=message)
+    # --- ПРОВЕРКА НОВОЙ СЕССИИ (ДОБАВИЛ) ---
+    is_new_session, current_session_id, hours_passed = db_check_new_session()
+    log_system("info", f"Проверка сессии: is_new={is_new_session}, session_id={current_session_id}, hours_passed={hours_passed}")
+
+    if is_new_session:
+        # Форматируем день недели по-русски
+        days_ru = ["понедельник", "вторник", "среда", "четверг", "пятница", "суббота", "воскресенье"]
+        now = datetime.now()
+        weekday_ru = days_ru[now.weekday()]
+        
+        session_msg = f"Начата новая сессия #{current_session_id}. Текущая дата {now.strftime('%Y-%m-%d %H:%M')}, {weekday_ru}. С окончания прошлой сессии прошло {hours_passed} часов."
+        
+        db_save_message(source="system", author="system", 
+                       message=session_msg, tag_weight=0, 
+                       tag_topics=["#_начало_сессии"],
+                       session_id=current_session_id)
+    else:
+        log_system("debug", f"Продолжена текущая сессия #{current_session_id}")
+
+    # Сохраняем входящее сообщение в БД (с явным session_id)
+    db_save_message(source=source, author=alias_user, message=message, session_id=current_session_id)
 
     # --- РЕКУРСИВНАЯ ОБРАБОТКА С ГЛУБИНОЙ ---
     max_recursion_depth = config_get('memory.max_recursion_depth', 3)
@@ -87,7 +105,7 @@ def route_message(user_data: dict) -> dict:
             # Сохраняем очищенный ответ в БД (но только если это не дубликат)
             # Проверяем, не было ли уже такого сообщения в этой сессии
             if not messages_to_send or clean_response != messages_to_send[-1]:
-                db_save_message(source=ai_provider, author=alias_ai, message=clean_response)
+                db_save_message(source=ai_provider, author=alias_ai, message=clean_response, session_id=current_session_id)
         
         # Проверяем, есть ли поисковый запрос
         if search_query:
@@ -98,7 +116,8 @@ def route_message(user_data: dict) -> dict:
                 # Сохраняем запрос AI (несмотря на лимит)
                 db_save_message(source=ai_provider, author=alias_ai, 
                                message=f"<SEARCH>{search_query}</SEARCH>",
-                               tag_weight=0, tag_topics=["#_поиск_запрос_лимит"])
+                               tag_weight=0, tag_topics=["#_поиск_запрос_лимит"],
+                               session_id=current_session_id)
                 # Выходим из цикла, финальный ответ - последний clean_response
                 final_ai_response = clean_response if clean_response else ai_response
                 break
@@ -107,7 +126,8 @@ def route_message(user_data: dict) -> dict:
             # 1. Сохраняем поисковый запрос (от AI) в БД
             db_save_message(source=ai_provider, author=alias_ai, 
                            message=f"<SEARCH>{search_query}</SEARCH>",
-                           tag_weight=0, tag_topics=["#_поиск_запрос"])
+                           tag_weight=0, tag_topics=["#_поиск_запрос"],
+                           session_id=current_session_id)
             
             # 2. Выполняем поиск
             search_results = ms_process_search_request(f"<SEARCH>{search_query}</SEARCH>")
@@ -116,7 +136,8 @@ def route_message(user_data: dict) -> dict:
             if search_results:
                 db_save_message(source="memory_search", author=alias_user, 
                                message=search_results,
-                               tag_weight=0, tag_topics=["#_поиск_результаты"])
+                               tag_weight=0, tag_topics=["#_поиск_результаты"],
+                               session_id=current_session_id)
             
             # 4. Увеличиваем глубину и продолжаем цикл
             current_depth += 1
@@ -134,7 +155,7 @@ def route_message(user_data: dict) -> dict:
         log_system("info", "Финальный вызов AI после достижения лимита глубины")
         final_ai_response, ai_provider_used = _ai_processor(user_id, message, source, metadata)
         
-        # Очищаем от тегов на случай, если в финальном ответе тоже есть тег
+        # Очищаем от тега на случай, если в финальном ответе тоже есть тег
         _, final_ai_response = _extract_first_search_query(final_ai_response)
     
     # Отправляем пользователю ВСЕ накопленные сообщения (текст без тегов)
@@ -149,7 +170,7 @@ def route_message(user_data: dict) -> dict:
     log_chat(ai_provider_used, alias_ai, final_ai_response.replace('\n', ' '))
 
     # Сохраняем исходящее сообщение в БД (финальный ответ)
-    db_save_message(source=ai_provider_used, author=alias_ai, message=final_ai_response)
+    db_save_message(source=ai_provider_used, author=alias_ai, message=final_ai_response, session_id=current_session_id)
 
     # Инициализация процессов памяти
     untagged_count = db_count_untagged_messages()

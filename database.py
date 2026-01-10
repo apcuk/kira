@@ -5,25 +5,11 @@ import psycopg2
 import psycopg2.extras
 import yaml
 
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
+from typing import List, Dict, Any, Optional
 
 from logger import log_system
 from config_loader import config_get
-
-# ============ КОНФИГУРАЦИЯ ============
-# DB_URL = os.getenv('DB_URL')
-
-#def _load_memory_config():
-#    """Загружает конфиг памяти из config.yaml"""
-#    try:
-#        with open('conf/config.yaml', 'r', encoding='utf-8') as f:
-#            config = yaml.safe_load(f)
-#        return config.get('memory', {})
-#    except Exception as e:
-#        log_system("error", f"Ошибка загрузки конфига памяти: {e}")
-#        return {'session_timeout_hours': 6}  # fallback
-#
-#MEMORY_CONFIG = _load_memory_config()
 
 # ============ БАЗОВЫЕ ФУНКЦИИ БД ============
 def db_get_connection():
@@ -116,12 +102,52 @@ def db_get_or_create_session_id():
     finally:
         conn.close()
 
-def db_save_message(source: str, author: str, message: str, tag_weight: int = 2, tag_topics: list = None):
-    """Сохраняет сообщение, автоматически определяя session_id.
+def db_check_new_session():
+    """
+    Проверяет, началась ли новая сессия.
+    Возвращает: (is_new_session, current_session_id, hours_passed)
+    """
+    conn = db_get_connection()
+    try:
+        cur = conn.cursor()
+        
+        # 1. Получаем текущий session_id (создаёт новый если истекла)
+        current_session_id = db_get_or_create_session_id()
+        
+        # 2. Берём последний session_id из БД
+        cur.execute('''
+            SELECT session_id, created_at 
+            FROM chatlog 
+            ORDER BY created_at DESC 
+            LIMIT 1
+        ''')
+        row = cur.fetchone()
+        
+        if not row:
+            # Первое сообщение вообще
+            return True, current_session_id, 0
+        
+        last_session_id, last_created = row
+        
+        # 3. Проверяем, новая ли сессия
+        is_new_session = (last_session_id != current_session_id)
+        
+        # 4. Считаем разницу в часах
+        now = datetime.now()
+        hours_passed = int((now - last_created).total_seconds() / 3600) if last_created else 0
+        
+        return is_new_session, current_session_id, hours_passed
+        
+    finally:
+        conn.close()
+
+def db_save_message(source: str, author: str, message: str, tag_weight: int = 2, tag_topics: list = None, session_id: int = None):
+    """Сохраняет сообщение. Если session_id не указан — определяет автоматически.
     По умолчанию tag_weight=2 (для обычных сообщений).
     Для служебных сообщений передавать tag_weight=0.
     """
-    session_id = db_get_or_create_session_id()
+    if session_id is None:
+        session_id = db_get_or_create_session_id()
     
     conn = db_get_connection()
     try:
@@ -142,6 +168,7 @@ def db_save_message(source: str, author: str, message: str, tag_weight: int = 2,
     finally:
         conn.close()
 
+# ============ ФУНКЦИИ ДЛЯ ТЕГИРОВАНИЯ ============
 def db_get_untagged_messages(conn, limit: int = 10):
     """
     Возвращает сообщения без тегов (tag_weight IS NULL)
@@ -175,7 +202,6 @@ def db_update_message_tags(conn, message_id: int, weight: int, topics: list):
     if cur.rowcount != 1:
         log_system("warning", f"Обновлено {cur.rowcount} строк вместо 1 для message_id={message_id}")
 
-
 def db_get_recent_messages(limit: int = 10):
     """Возвращает последние limit сообщений из chatlog"""
     conn = db_get_connection()
@@ -192,7 +218,6 @@ def db_get_recent_messages(limit: int = 10):
     finally:
         conn.close()
 
-
 def db_count_untagged_messages():
     """Возвращает количество нетэгированных сообщений"""
     conn = db_get_connection()
@@ -206,6 +231,7 @@ def db_count_untagged_messages():
     finally:
         conn.close()
 
+# ============ ФУНКЦИИ ДЛЯ ЧАНКОВАНИЯ ============
 def db_count_unchunked_messages():
     """Возвращает количество сообщений, готовых для чанкования (tag_weight >= 1)"""
     conn = db_get_connection()
@@ -269,6 +295,7 @@ def db_save_chunk(conn, chunk_text: str, message_ids: list):
     log_system("info", f"Сохранён чанк {chunk_id} с {len(message_ids)} сообщениями")
     return chunk_id     
 
+# ============ ФУНКЦИИ ДЛЯ ВЕКТОРИЗАЦИИ ============
 def db_get_chunks_without_embeddings(conn, limit: int = 10):
     """
     Возвращает чанки без эмбеддингов (embedding IS NULL)
@@ -299,4 +326,4 @@ def db_update_chunk_embedding(conn, chunk_id: int, embedding: list):
     ''', (embedding, chunk_id))
     
     if cur.rowcount != 1:
-        log_system("warning", f"Обновлено {cur.rowcount} строк вместо 1 для chunk_id={chunk_id}")       
+        log_system("warning", f"Обновлено {cur.rowcount} строк вместо 1 для chunk_id={chunk_id}")

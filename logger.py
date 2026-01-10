@@ -35,6 +35,20 @@ class ConsoleFormatter(logging.Formatter):
         'reset': '\033[0m'        # сброс
     }
     
+class ConsoleFormatter(logging.Formatter):
+    """Форматтер для консоли с цветами (только текст сообщения)"""
+    
+    # ANSI коды цветов
+    COLORS = {
+        'debug': '\033[90m',      # серый
+        'info': '\033[0m',        # обычный
+        'warning': '\033[33m',    # желтый
+        'error': '\033[31m',      # красный
+        'critical': '\033[41m',   # красный фон
+        'blue': '\033[94m',       # синий (для поисковых запросов и сессий)
+        'reset': '\033[0m'        # сброс
+    }
+    
     def format(self, record):
         time_str = datetime.fromtimestamp(record.created).strftime('%d/%m %H:%M:%S')
         level = record.levelname.lower()
@@ -60,6 +74,15 @@ class ConsoleFormatter(logging.Formatter):
         
         if any(trigger.lower() in message.lower() for trigger in search_triggers):
             message_color = self.COLORS['blue']  # СИНИЙ для поиска
+        
+        # Подсвечиваем СИНИМ сообщения о сессиях
+        session_triggers = [
+            'Начата новая сессия',
+            'Продолжена текущая сессия'
+        ]
+        
+        if any(trigger.lower() in message.lower() for trigger in session_triggers):
+            message_color = self.COLORS['blue']  # СИНИЙ для сессий
         
         # Ошибки - красный текст
         if level == 'error':
